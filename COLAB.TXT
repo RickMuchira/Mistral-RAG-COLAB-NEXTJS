@@ -1,0 +1,439 @@
+# Cell 1
+!pip install -q transformers accelerate sentence-transformers faiss-cpu pypdf langchain PyPDF2 langchain-community ollama langchain_community langchain_core torch flask flask-cors pyngrok
+
+# Cell 2: Imports and Setup
+import os
+import pickle
+import faiss
+import torch
+import numpy as np
+from flask import Flask, request, jsonify, make_response
+from flask_cors import CORS
+from pypdf import PdfReader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain.docstore.document import Document
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.llms import Ollama
+from pyngrok import ngrok, conf
+
+# Cell 3: Start Ollama service
+!pkill -f ollama  # Stop any existing ollama processes
+!ollama serve > /dev/null 2>&1 &
+!sleep 10  # Give Ollama more time to start (increased from 5 to 10 seconds)
+!ollama pull mistral
+# Verify Ollama is running
+!curl -s localhost:11434/api/tags | head -20
+
+# Cell 4: Initialize Models
+# Use a smaller embedding model and force CPU usage
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2",  # Smaller model
+    model_kwargs={'device': 'cpu'},  # Force CPU usage
+    encode_kwargs={'normalize_embeddings': True}
+)
+
+# Initialize Ollama without the request_timeout parameter
+llm = Ollama(
+    model="mistral",
+    temperature=0.3,
+    num_ctx=4096,
+    base_url="http://localhost:11434",  # Explicitly set the base URL
+    system="You are an expert academic assistant. Provide comprehensive answers with examples and evidence from the provided documents."
+)
+
+# Test LLM with a simple question
+try:
+    result = llm.invoke("What is 2+2?")
+    print("LLM Test Result:", result)
+    if result:
+        print("✅ LLM is working properly!")
+    else:
+        print("⚠️ LLM returned empty result")
+except Exception as e:
+    print("❌ LLM Error:", e)
+
+# Cell 5: Advanced Prompt Template
+quality_prompt = ChatPromptTemplate.from_template("""
+Analyze the context and provide:
+1. Comprehensive answer
+2. Relevant examples
+3. Key evidence
+4. Practical applications
+
+Context: {context}
+Question: {input}
+
+Structure your response with:
+*Core Answer* - Direct response
+*Detailed Explanation* - Technical breakdown
+*Key Evidence* - Supporting quotes
+*Applications* - Real-world usage""")
+
+# Cell 6: Vector Store Management
+class VectorStore:
+    def __init__(self):
+        self.documents = []
+        self.vector_store = None
+        self.initialize_store()
+
+    def initialize_store(self):
+        self.vector_store = FAISS.from_texts(["Initialize"], embeddings)
+
+    def add_documents(self, chunks):
+        if not self.vector_store:
+            self.initialize_store()
+        self.vector_store.add_documents(chunks)
+        self.documents.extend(chunks)
+
+    def save(self):
+        if not self.vector_store:
+            print("No vector store to save")
+            return
+        faiss.write_index(self.vector_store.index, "vector_store.index")
+        with open("documents.pkl", "wb") as f:
+            pickle.dump(self.documents, f)
+        print("Vector store saved successfully")
+
+    def load(self):
+        try:
+            if os.path.exists("vector_store.index") and os.path.exists("documents.pkl"):
+                if not self.vector_store:
+                    self.initialize_store()
+                self.vector_store.index = faiss.read_index("vector_store.index")
+                with open("documents.pkl", "rb") as f:
+                    self.documents = pickle.load(f)
+                print("Loaded existing vector store")
+                return True
+            else:
+                print("No existing vector store found, starting fresh")
+                return False
+        except Exception as e:
+            print(f"Error loading vector store: {str(e)}")
+            return False
+
+# Initialize the vector store
+vector_db = VectorStore()
+vector_db.load()  # Try to load existing vector store
+
+# Cell 7: Enhanced PDF Processing
+def process_pdf(file_path):
+    text = ""
+    try:
+        with open(file_path, "rb") as f:
+            reader = PdfReader(f)
+            for page in reader.pages:
+                page_text = page.extract_text()
+                if page_text:  # Check if text extraction was successful
+                    text += page_text + "\n"
+
+        if not text.strip():
+            return "⚠️ No text extracted from the PDF"
+
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+            separators=["\n\n", "\n", "\. ", "!", "?", ", "]
+        )
+        chunks = text_splitter.create_documents([text])
+
+        if not chunks:
+            return "⚠️ No chunks created from the PDF"
+
+        # Add metadata for source tracking - use filename as source
+        for chunk in chunks:
+            if not hasattr(chunk, 'metadata'):
+                chunk.metadata = {}
+            chunk.metadata["source"] = os.path.basename(file_path)
+
+        vector_db.add_documents(chunks)
+        vector_db.save()
+        return f"✅ Processed {len(chunks)} chunks from {os.path.basename(file_path)}"
+
+    except Exception as e:
+        return f"❌ Error processing PDF: {str(e)}"
+
+# Cell 8: Query System
+# Replace this entire function in your Colab notebook
+
+def ask_question(question):
+    if not vector_db.documents or not vector_db.vector_store:
+        return {"answer": "⚠️ Upload PDFs first!", "sources": []}
+
+    try:
+        print(f"Processing question: {question}")
+        print(f"Vector DB has {len(vector_db.documents)} documents")
+
+        # First, try to use the retriever to get documents
+        try:
+            # Use FAISS directly instead of LangChain's retriever
+            import numpy as np
+
+            # Get the embedding for the query
+            query_embedding = embeddings.embed_query(question)
+
+            # Convert to proper numpy array
+            query_embedding_np = np.array([query_embedding], dtype=np.float32)
+
+            # Search the FAISS index directly
+            D, I = vector_db.vector_store.index.search(query_embedding_np, k=5)
+
+            print(f"Retrieved {len(I[0])} document indices")
+
+            # Map the indices back to documents
+            retrieved_docs = []
+            sources = []
+
+            for idx in I[0]:
+                if idx < len(vector_db.documents) and idx >= 0:
+                    doc = vector_db.documents[int(idx)]  # Convert np.int64 to int
+                    retrieved_docs.append(doc)
+
+                    # Extract source info
+                    excerpt = doc.page_content[:150] + "..." if len(doc.page_content) > 150 else doc.page_content
+                    title = doc.metadata.get("source", f"Document {idx}")
+                    sources.append({"title": title, "excerpt": excerpt})
+
+            print(f"Successfully retrieved {len(retrieved_docs)} documents")
+
+        except Exception as retriever_error:
+            print(f"Error with FAISS retrieval: {str(retriever_error)}")
+            import traceback
+            traceback.print_exc()
+
+            # Fallback: try a simple similarity search if available
+            try:
+                print("Trying simple text similarity as fallback...")
+
+                # Simple approach: Find documents that contain similar words
+                relevant_docs = []
+                question_words = set(question.lower().split())
+
+                for doc in vector_db.documents:
+                    doc_words = set(doc.page_content.lower().split())
+                    # Calculate simple overlap
+                    overlap = len(question_words.intersection(doc_words))
+                    if overlap > 0:
+                        relevant_docs.append((doc, overlap))
+
+                # Sort by overlap and take top 5
+                relevant_docs.sort(key=lambda x: x[1], reverse=True)
+                retrieved_docs = [doc for doc, _ in relevant_docs[:5]]
+
+                # Extract source info
+                sources = []
+                for i, (doc, _) in enumerate(relevant_docs[:5]):
+                    excerpt = doc.page_content[:150] + "..." if len(doc.page_content) > 150 else doc.page_content
+                    title = doc.metadata.get("source", f"Document {i}")
+                    sources.append({"title": title, "excerpt": excerpt})
+
+                print(f"Fallback found {len(retrieved_docs)} documents")
+
+            except Exception as fallback_error:
+                print(f"Fallback retrieval also failed: {str(fallback_error)}")
+                retrieved_docs = []
+                sources = []
+
+        # If we have no documents, generate a general answer
+        if not retrieved_docs:
+            print("No relevant documents found, generating general answer...")
+            try:
+                answer = llm.invoke(f"Question: {question}\nAnswer: ")
+                return {"answer": answer, "sources": []}
+            except Exception as direct_error:
+                print(f"Error generating direct answer: {str(direct_error)}")
+                return {"answer": "I couldn't find relevant information to answer your question.", "sources": []}
+
+        # Generate answer using the retrieved documents
+        print(f"Generating answer with {len(retrieved_docs)} documents...")
+
+        try:
+            # Build a context from retrieved documents
+            context = "\n\n".join([doc.page_content for doc in retrieved_docs])
+
+            # Create a simple prompt
+            prompt = f"""
+            Use the following information to answer the question. If the information doesn't contain the answer, say that you don't have enough information.
+
+            Information:
+            {context}
+
+            Question: {question}
+
+            Answer:
+            """
+
+            # Generate answer directly with Ollama
+            answer = llm.invoke(prompt)
+            print("Successfully generated answer")
+
+            return {"answer": answer, "sources": sources}
+
+        except Exception as answer_error:
+            print(f"Error generating answer: {str(answer_error)}")
+            import traceback
+            traceback.print_exc()
+            return {"answer": f"Error generating answer: {str(answer_error)}", "sources": sources}
+
+    except Exception as e:
+        print(f"General error in ask_question: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {"answer": f"Error: {str(e)}", "sources": []}
+
+    # Cell 9: Flask API Setup with ngrok
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=False)
+
+# Add these lines after your Flask app setup
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+
+@app.route('/upload', methods=['POST'])
+def upload_endpoint():
+    if 'files' not in request.files:
+        return jsonify({'error': 'No files provided'}), 400
+
+    files = request.files.getlist('files')
+    results = []
+
+    for file in files:
+        if file.filename.endswith('.pdf'):
+            # Save the file temporarily
+            temp_path = f"/tmp/{file.filename}"
+            file.save(temp_path)
+
+            # Process the PDF
+            result = process_pdf(temp_path)
+            results.append(result)
+
+            # Clean up
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+
+    if not results:
+        return jsonify({'message': 'No PDFs were uploaded.'}), 400
+
+    return jsonify({'message': '\n'.join(results)}), 200
+
+@app.route('/ask', methods=['POST'])
+def ask_endpoint():
+    data = request.json
+    print("\n---- ASK ENDPOINT ----")
+    print("Request data:", data)
+
+    if not data or 'question' not in data:
+        print("Error: No question provided")
+        return jsonify({'error': 'No question provided'}), 400
+
+    question = data['question']
+    print("Processing question:", question)
+
+    try:
+        # Test LLM availability before processing
+        try:
+            test_result = llm.invoke("test")
+            print("✅ LLM test successful")
+        except Exception as llm_test_error:
+            print(f"❌ LLM test failed: {str(llm_test_error)}")
+            # Try restarting Ollama if the test failed
+            try:
+                print("Attempting to restart Ollama...")
+                os.system("pkill -f ollama")
+                os.system("ollama serve > /dev/null 2>&1 &")
+                os.system("sleep 5")
+                # Re-test after restart
+                test_result = llm.invoke("test")
+                print("✅ LLM restarted and working")
+            except Exception as restart_error:
+                print(f"❌ Failed to restart LLM: {str(restart_error)}")
+                return jsonify({'answer': "Error: Could not connect to the AI model. Please try again later.", 'sources': []}), 200
+
+        result = ask_question(question)
+        print("Got result from ask_question function:")
+        print("- Answer length:", len(result.get('answer', '')) if result.get('answer') else 'No answer')
+        print("- Sources count:", len(result.get('sources', [])))
+        print("- Answer preview:", result.get('answer', '')[:100], "..." if result.get('answer') and len(result.get('answer', '')) > 100 else "")
+
+        return jsonify(result), 200
+    except Exception as e:
+        print("Error in ask_endpoint:", str(e))
+        import traceback
+        traceback.print_exc()
+        return jsonify({'answer': f'Error processing question: {str(e)}', 'sources': []}), 200  # Return 200 so frontend displays the error
+
+@app.route('/ping', methods=['GET', 'OPTIONS'])
+def ping():
+    if request.method == 'OPTIONS':
+        return make_response('', 204)
+    return jsonify({'status': 'pong', 'message': 'API is working!'}), 200
+
+# Cell 10: Configure ngrok and run Flask app
+# You need to sign up for a free account at ngrok.com and get your authtoken
+NGROK_AUTH_TOKEN = "2biVQ2NBtgxrL8PhGvtGIfYpB79_3ANkSuGqSywhKiQKKQnxK"  # Replace with your actual authtoken
+
+def run_flask_app_with_ngrok():
+    # Set ngrok auth token
+    ngrok.set_auth_token(NGROK_AUTH_TOKEN)
+
+    port = 5000
+    # Create a tunnel to the Flask app
+    public_url = ngrok.connect(port).public_url
+
+    print(f"\n{'='*70}")
+    print(f"✅ NGROK Public URL: {public_url}")
+    print(f"⚠️ IMPORTANT: Update API_BASE_URL in your Next.js app/api/client.ts file to:")
+    print(f"const API_BASE_URL = '{public_url}';")
+    print(f"{'='*70}")
+
+    # Display a clickable link to test the API
+    print(f"\nTest your API: {public_url}/ping")
+
+    # Run the Flask app
+    app.run(port=port)
+
+# Run this cell to verify Ollama is working properly
+!ps aux | grep ollama
+print("\nTesting Ollama API...")
+!curl -s localhost:11434/api/tags | head -20
+
+print("\nDirect test with Ollama...")
+try:
+    test_result = llm.invoke("What is 2+2?")
+    print("LLM Test Result:", test_result)
+    print("✅ Ollama is working correctly!")
+except Exception as e:
+    print("❌ Ollama error:", e)
+    print("\nAttempting to restart Ollama...")
+    !pkill -f ollama
+    !ollama serve > /dev/null 2>&1 &
+    !sleep 10
+    !ollama pull mistral
+    print("\nRetesting after restart...")
+    try:
+        test_result = llm.invoke("What is 2+2?")
+        print("LLM Test Result after restart:", test_result)
+        print("✅ Ollama is now working correctly!")
+    except Exception as e2:
+        print("❌ Ollama still has issues:", e2)
+
+# Cell 11: Main execution point - run this cell to start the API
+if __name__ == "__main__":
+    # Verify we have everything set up
+    print("System status:")
+    print(f"- Vector store initialized: {vector_db.vector_store is not None}")
+    print(f"- Documents loaded: {len(vector_db.documents)}")
+    print(f"- Embedding model: {embeddings.model_name}")
+    print(f"- LLM model: Ollama Mistral")
+
+    print("\nStarting Flask API with ngrok tunneling...")
+    run_flask_app_with_ngrok()
