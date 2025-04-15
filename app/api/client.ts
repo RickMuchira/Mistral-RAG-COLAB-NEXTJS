@@ -12,11 +12,29 @@ export interface SourceInfo {
   
   /**
    * Your ngrok Backend API URL
-   * IMPORTANT: Replace this URL with the ngrok URL that is displayed in your Google Colab when you run the backend
-   * It will look something like: https://xxxx-xxx-xxx-xxx-xxx.ngrok.io
+   * IMPORTANT: This URL needs to be updated when you restart your Colab
    */
-  const API_BASE_URL = 'https://fafa-34-19-104-99.ngrok-free.app';
-
+  const API_BASE_URL = 'https://4240-34-125-10-173.ngrok-free.app';
+  // Add a ping function to test connection
+  export async function pingBackend(): Promise<boolean> {
+    try {
+      console.log('Testing backend connection to:', `${API_BASE_URL}/ping`);
+      const response = await fetch(`${API_BASE_URL}/ping`, {
+        method: 'GET',
+        mode: 'cors',
+        headers: {
+          'Accept': 'application/json',
+        },
+        cache: 'no-cache',
+      });
+      
+      console.log('Ping response status:', response.status);
+      return response.ok;
+    } catch (error) {
+      console.error('Backend connection test failed:', error);
+      return false;
+    }
+  }
   
   /**
    * Upload PDF files to the backend
@@ -31,17 +49,21 @@ export interface SourceInfo {
     try {
       console.log('Attempting to upload files to:', `${API_BASE_URL}/upload`);
       
+      // First verify the backend is reachable
+      const isConnected = await pingBackend();
+      if (!isConnected) {
+        throw new Error('Cannot reach the backend API. The ngrok tunnel may have expired.');
+      }
+      
       const response = await fetch(`${API_BASE_URL}/upload`, {
         method: 'POST',
         body: formData,
         mode: 'cors',
         cache: 'no-cache',
-        headers: {
-          // Don't set Content-Type header for FormData - browser will set it with boundary
-        },
+        credentials: 'omit', // Don't send cookies
       });
       
-      console.log('Response status:', response.status);
+      console.log('Upload response status:', response.status);
       
       if (!response.ok) {
         let errorMessage = 'Upload failed';
@@ -49,12 +71,10 @@ export interface SourceInfo {
           const errorData = await response.json();
           errorMessage = errorData.error || errorMessage;
         } catch (e) {
-          // If response is not JSON, try to get text
           try {
             const errorText = await response.text();
             errorMessage = errorText || errorMessage;
           } catch (e2) {
-            // If we can't get text either, use status
             errorMessage = `Upload failed: ${response.status} ${response.statusText}`;
           }
         }
@@ -72,18 +92,48 @@ export interface SourceInfo {
    * Ask a question about the uploaded documents
    */
   export async function askQuestion(question: string): Promise<AskResponse> {
-    const response = await fetch(`${API_BASE_URL}/ask`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ question }),
-    });
-    
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to process question');
+    try {
+      console.log('Sending question to backend:', question);
+      
+      // First verify the backend is reachable
+      const isConnected = await pingBackend();
+      if (!isConnected) {
+        throw new Error('Cannot reach the backend API. The ngrok tunnel may have expired.');
+      }
+      
+      const response = await fetch(`${API_BASE_URL}/ask`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        mode: 'cors',
+        cache: 'no-cache',
+        credentials: 'omit', // Don't send cookies
+        body: JSON.stringify({ question }),
+      });
+      
+      console.log('Ask response status:', response.status);
+      
+      if (!response.ok) {
+        let errorMessage = 'Failed to process question';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+          try {
+            const errorText = await response.text();
+            errorMessage = errorText || errorMessage;
+          } catch (e2) {
+            errorMessage = `Question processing failed: ${response.status} ${response.statusText}`;
+          }
+        }
+        throw new Error(errorMessage);
+      }
+      
+      return await response.json();
+    } catch (error) {
+      console.error('Question processing error:', error);
+      throw error;
     }
-    
-    return response.json();
   }

@@ -1,13 +1,14 @@
 "use client"
 
-import type React from "react"
-
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
-import { Loader2, Search, FileText, AlertCircle } from "lucide-react"
-import { askQuestion as askQuestionApi, SourceInfo } from "@/app/api/client"
+import { Loader2, Search, FileText, AlertCircle, Filter } from "lucide-react"
+import { askQuestion as askQuestionApi, SourceInfo, pingBackend } from "@/app/api/client"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Label } from "@/components/ui/label"
+import { Course, Year, Semester, Unit } from '@/lib/models'
 
 export function QuestionInterface() {
   const [question, setQuestion] = useState("")
@@ -16,6 +17,112 @@ export function QuestionInterface() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [history, setHistory] = useState<Array<{question: string, answer: string, sources: SourceInfo[]}>>([])
+  
+  // Course structure state
+  const [courses, setCourses] = useState<Course[]>([])
+  const [years, setYears] = useState<Year[]>([])
+  const [semesters, setSemesters] = useState<Semester[]>([])
+  const [units, setUnits] = useState<Unit[]>([])
+  
+  const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null)
+  const [selectedYearId, setSelectedYearId] = useState<string | null>(null)
+  const [selectedSemesterId, setSelectedSemesterId] = useState<string | null>(null)
+  const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null)
+  
+  const [loadingStructure, setLoadingStructure] = useState(false)
+  const [showFilters, setShowFilters] = useState(false)
+  
+  // Fetch courses on component mount
+  useEffect(() => {
+    fetchCourses()
+  }, [])
+  
+  // Fetch years when course is selected
+  useEffect(() => {
+    if (selectedCourseId) {
+      fetchYears(selectedCourseId)
+    } else {
+      setYears([])
+      setSelectedYearId(null)
+    }
+  }, [selectedCourseId])
+  
+  // Fetch semesters when year is selected
+  useEffect(() => {
+    if (selectedYearId) {
+      fetchSemesters(selectedYearId)
+    } else {
+      setSemesters([])
+      setSelectedSemesterId(null)
+    }
+  }, [selectedYearId])
+  
+  // Fetch units when semester is selected
+  useEffect(() => {
+    if (selectedSemesterId) {
+      fetchUnits(selectedSemesterId)
+    } else {
+      setUnits([])
+      setSelectedUnitId(null)
+    }
+  }, [selectedSemesterId])
+  
+  // API functions for course structure
+  async function fetchCourses() {
+    setLoadingStructure(true)
+    try {
+      const response = await fetch('/api/courses')
+      if (!response.ok) throw new Error('Failed to fetch courses')
+      const data = await response.json()
+      setCourses(data)
+    } catch (error) {
+      setError('Error loading courses: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setLoadingStructure(false)
+    }
+  }
+  
+  async function fetchYears(courseId: string) {
+    setLoadingStructure(true)
+    try {
+      const response = await fetch(`/api/courses/${courseId}/years`)
+      if (!response.ok) throw new Error('Failed to fetch years')
+      const data = await response.json()
+      setYears(data)
+    } catch (error) {
+      setError('Error loading years: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setLoadingStructure(false)
+    }
+  }
+  
+  async function fetchSemesters(yearId: string) {
+    setLoadingStructure(true)
+    try {
+      const response = await fetch(`/api/years/${yearId}/semesters`)
+      if (!response.ok) throw new Error('Failed to fetch semesters')
+      const data = await response.json()
+      setSemesters(data)
+    } catch (error) {
+      setError('Error loading semesters: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setLoadingStructure(false)
+    }
+  }
+  
+  async function fetchUnits(semesterId: string) {
+    setLoadingStructure(true)
+    try {
+      const response = await fetch(`/api/semesters/${semesterId}/units`)
+      if (!response.ok) throw new Error('Failed to fetch units')
+      const data = await response.json()
+      setUnits(data)
+    } catch (error) {
+      setError('Error loading units: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setLoadingStructure(false)
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -29,10 +136,33 @@ export function QuestionInterface() {
     console.log("Submitting question:", question)
 
     try {
-      // Use our API client to ask the question
-      console.log("Calling askQuestionApi...")
-      const result = await askQuestionApi(question)
-      console.log("Received response:", result)
+      // Check backend connectivity
+      const isConnected = await pingBackend()
+      if (!isConnected) {
+        throw new Error("Cannot reach the backend API. The ngrok tunnel may have expired.")
+      }
+      
+      // Send question to enhanced API with course filters
+      const response = await fetch('/api/ask', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          question,
+          courseId: selectedCourseId,
+          yearId: selectedYearId,
+          semesterId: selectedSemesterId,
+          unitId: selectedUnitId
+        }),
+      })
+      
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || "Failed to process question")
+      }
+      
+      const result = await response.json()
       
       // Check if we got a valid response
       if (!result) {
@@ -82,9 +212,150 @@ export function QuestionInterface() {
       if (form) form.dispatchEvent(new Event('submit', { cancelable: true }));
     }, 100);
   }
+  
+  // Get a human-readable description of the current filter
+  const getFilterDescription = () => {
+    if (!selectedCourseId) return "All documents"
+    
+    const course = courses.find(c => c.id?.toString() === selectedCourseId)
+    if (!selectedYearId) return `All documents in ${course?.name || 'the selected course'}`
+    
+    const year = years.find(y => y.id?.toString() === selectedYearId)
+    if (!selectedSemesterId) return `All documents in ${year?.name || 'the selected year'}`
+    
+    const semester = semesters.find(s => s.id?.toString() === selectedSemesterId)
+    if (!selectedUnitId) return `All documents in ${semester?.name || 'the selected semester'}`
+    
+    const unit = units.find(u => u.id?.toString() === selectedUnitId)
+    return `Documents in ${unit?.name || 'the selected unit'}`
+  }
 
   return (
     <div className="space-y-6">
+      {/* Course structure filters */}
+      <div>
+        <Button 
+          variant="outline" 
+          size="sm"
+          onClick={() => setShowFilters(!showFilters)}
+          className="mb-4"
+        >
+          <Filter className="h-4 w-4 mr-2" />
+          {showFilters ? "Hide Filters" : "Show Filters"}
+        </Button>
+        
+        {showFilters && (
+          <Card className="mb-4">
+            <CardContent className="p-4 space-y-4">
+              <h3 className="font-medium">Filter documents by course structure</h3>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div>
+                  <Label htmlFor="course-select">Course</Label>
+                  <Select 
+                    value={selectedCourseId || "all-courses"} 
+                    onValueChange={setSelectedCourseId}
+                    disabled={loadingStructure}
+                  >
+                    <SelectTrigger id="course-select" className="w-full">
+                      <SelectValue placeholder="All courses" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all-courses">All courses</SelectItem>
+                      {courses.map(course => (
+                        <SelectItem key={course.id} value={course.id?.toString() || ""}>
+                          {course.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                {selectedCourseId && selectedCourseId !== "all-courses" && (
+                  <div>
+                    <Label htmlFor="year-select">Year</Label>
+                    <Select 
+                      value={selectedYearId || "all-years"} 
+                      onValueChange={setSelectedYearId}
+                      disabled={loadingStructure || years.length === 0}
+                    >
+                      <SelectTrigger id="year-select" className="w-full">
+                        <SelectValue placeholder="All years" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all-years">All years</SelectItem>
+                        {years.map(year => (
+                          <SelectItem key={year.id} value={year.id?.toString() || ""}>
+                            {year.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                
+                {selectedYearId && selectedYearId !== "all-years" && (
+                  <div>
+                    <Label htmlFor="semester-select">Semester</Label>
+                    <Select 
+                      value={selectedSemesterId || "all-semesters"} 
+                      onValueChange={setSelectedSemesterId}
+                      disabled={loadingStructure || semesters.length === 0}
+                    >
+                      <SelectTrigger id="semester-select" className="w-full">
+                        <SelectValue placeholder="All semesters" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all-semesters">All semesters</SelectItem>
+                        {semesters.map(semester => (
+                          <SelectItem key={semester.id} value={semester.id?.toString() || ""}>
+                            {semester.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                
+                {selectedSemesterId && selectedSemesterId !== "all-semesters" && (
+                  <div>
+                    <Label htmlFor="unit-select">Unit</Label>
+                    <Select 
+                      value={selectedUnitId || "all-units"} 
+                      onValueChange={setSelectedUnitId}
+                      disabled={loadingStructure || units.length === 0}
+                    >
+                      <SelectTrigger id="unit-select" className="w-full">
+                        <SelectValue placeholder="All units" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all-units">All units</SelectItem>
+                        {units.map(unit => (
+                          <SelectItem key={unit.id} value={unit.id?.toString() || ""}>
+                            {unit.code} - {unit.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+              
+              {loadingStructure && (
+                <div className="flex items-center justify-center py-2">
+                  <Loader2 className="h-4 w-4 animate-spin text-gray-400 mr-2" />
+                  <span className="text-sm text-gray-500">Loading...</span>
+                </div>
+              )}
+              
+              <div className="text-sm font-medium text-gray-500">
+                Currently searching: {getFilterDescription()}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+      
       <form onSubmit={handleSubmit} className="flex w-full space-x-2">
         <Input
           value={question}
