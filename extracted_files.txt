@@ -1,0 +1,1750 @@
+File: ./components/course-manager.tsx
+'use client'
+import type React from "react"
+
+import { useState, useEffect } from 'react'
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
+import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog"
+import { Label } from "@/components/ui/label"
+import { Loader2, Plus, Trash2, Edit, ChevronRight, Book, PenLine, School, BookOpen, FileText } from "lucide-react"
+import { Course, Year, Semester, Unit } from '@/lib/models'
+
+export function CourseManager() {
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [selectedCourse, setSelectedCourse] = useState<Course | null>(null);
+  const [years, setYears] = useState<Year[]>([]);
+  const [selectedYear, setSelectedYear] = useState<Year | null>(null);
+  const [semesters, setSemesters] = useState<Semester[]>([]);
+  const [selectedSemester, setSelectedSemester] = useState<Semester | null>(null);
+  const [units, setUnits] = useState<Unit[]>([]);
+  
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Dialog state
+  const [showCourseDialog, setShowCourseDialog] = useState(false);
+  const [showYearDialog, setShowYearDialog] = useState(false);
+  const [showSemesterDialog, setShowSemesterDialog] = useState(false);
+  const [showUnitDialog, setShowUnitDialog] = useState(false);
+  
+  // Form state
+  const [courseForm, setCourseForm] = useState({ name: '', description: '' });
+  const [yearForm, setYearForm] = useState({ name: '', year_number: '' });
+  const [semesterForm, setSemesterForm] = useState({ name: '', semester_number: '' });
+  const [unitForm, setUnitForm] = useState({ name: '', code: '', description: '' });
+  
+  // Fetch courses on component mount
+  useEffect(() => {
+    fetchCourses();
+  }, []);
+  
+  // Fetch years when a course is selected
+  useEffect(() => {
+    if (selectedCourse) {
+      fetchYears(selectedCourse.id!);
+    }
+  }, [selectedCourse]);
+  
+  // Fetch semesters when a year is selected
+  useEffect(() => {
+    if (selectedYear) {
+      fetchSemesters(selectedYear.id!);
+    }
+  }, [selectedYear]);
+  
+  // Fetch units when a semester is selected
+  useEffect(() => {
+    if (selectedSemester) {
+      fetchUnits(selectedSemester.id!);
+    }
+  }, [selectedSemester]);
+  
+  // API functions
+  async function fetchCourses() {
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch('/api/courses');
+      if (!response.ok) throw new Error('Failed to fetch courses');
+      
+      const data = await response.json();
+      setCourses(data);
+      
+      // Reset selections when loading new courses
+      setSelectedCourse(null);
+      setSelectedYear(null);
+      setSelectedSemester(null);
+      setYears([]);
+      setSemesters([]);
+      setUnits([]);
+    } catch (error) {
+      setError('Error loading courses: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+  
+  async function fetchYears(courseId: number) {
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(`/api/courses/${courseId}/years`);
+      if (!response.ok) throw new Error('Failed to fetch years');
+      
+      const data = await response.json();
+      setYears(data);
+      
+      // Reset year-related selections
+      setSelectedYear(null);
+      setSelectedSemester(null);
+      setSemesters([]);
+      setUnits([]);
+    } catch (error) {
+      setError('Error loading years: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+  
+  async function fetchSemesters(yearId: number) {
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(`/api/years/${yearId}/semesters`);
+      if (!response.ok) throw new Error('Failed to fetch semesters');
+      
+      const data = await response.json();
+      setSemesters(data);
+      
+      // Reset semester-related selections
+      setSelectedSemester(null);
+      setUnits([]);
+    } catch (error) {
+      setError('Error loading semesters: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+  
+  async function fetchUnits(semesterId: number) {
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(`/api/semesters/${semesterId}/units`);
+      if (!response.ok) throw new Error('Failed to fetch units');
+      
+      const data = await response.json();
+      setUnits(data);
+    } catch (error) {
+      setError('Error loading units: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+  
+  // Form submission handlers
+  async function handleCreateCourse() {
+    if (!courseForm.name) return;
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch('/api/courses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(courseForm)
+      });
+      
+      if (!response.ok) throw new Error('Failed to create course');
+      
+      // Close dialog and reset form
+      setShowCourseDialog(false);
+      setCourseForm({ name: '', description: '' });
+      
+      // Refresh courses
+      fetchCourses();
+    } catch (error) {
+      setError('Error creating course: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+  
+  async function handleCreateYear() {
+    if (!yearForm.name || !yearForm.year_number || !selectedCourse) return;
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(`/api/courses/${selectedCourse.id}/years`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: yearForm.name,
+          year_number: parseInt(yearForm.year_number)
+        })
+      });
+      
+      if (!response.ok) throw new Error('Failed to create year');
+      
+      // Close dialog and reset form
+      setShowYearDialog(false);
+      setYearForm({ name: '', year_number: '' });
+      
+      // Refresh years
+      fetchYears(selectedCourse.id!);
+    } catch (error) {
+      setError('Error creating year: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+  
+  async function handleCreateSemester() {
+    if (!semesterForm.name || !semesterForm.semester_number || !selectedYear) return;
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(`/api/years/${selectedYear.id}/semesters`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: semesterForm.name,
+          semester_number: parseInt(semesterForm.semester_number)
+        })
+      });
+      
+      if (!response.ok) throw new Error('Failed to create semester');
+      
+      // Close dialog and reset form
+      setShowSemesterDialog(false);
+      setSemesterForm({ name: '', semester_number: '' });
+      
+      // Refresh semesters
+      fetchSemesters(selectedYear.id!);
+    } catch (error) {
+      setError('Error creating semester: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+  
+  async function handleCreateUnit() {
+    if (!unitForm.name || !unitForm.code || !selectedSemester) return;
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(`/api/semesters/${selectedSemester.id}/units`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(unitForm)
+      });
+      
+      if (!response.ok) throw new Error('Failed to create unit');
+      
+      // Close dialog and reset form
+      setShowUnitDialog(false);
+      setUnitForm({ name: '', code: '', description: '' });
+      
+      // Refresh units
+      fetchUnits(selectedSemester.id!);
+    } catch (error) {
+      setError('Error creating unit: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+  
+  // Delete handlers
+  async function handleDeleteCourse(courseId: number) {
+    if (!confirm('Are you sure you want to delete this course? This will delete all associated years, semesters, units, and documents.')) {
+      return;
+    }
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(`/api/courses/${courseId}`, {
+        method: 'DELETE'
+      });
+      
+      if (!response.ok) throw new Error('Failed to delete course');
+      
+      // Refresh courses
+      fetchCourses();
+    } catch (error) {
+      setError('Error deleting course: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+  
+  async function handleDeleteYear(yearId: number) {
+    if (!confirm('Are you sure you want to delete this year? This will delete all associated semesters, units, and documents.')) {
+      return;
+    }
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(`/api/years/${yearId}`, {
+        method: 'DELETE'
+      });
+      
+      if (!response.ok) throw new Error('Failed to delete year');
+      
+      // Refresh years
+      if (selectedCourse) {
+        fetchYears(selectedCourse.id!);
+      }
+    } catch (error) {
+      setError('Error deleting year: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+  
+  async function handleDeleteSemester(semesterId: number) {
+    if (!confirm('Are you sure you want to delete this semester? This will delete all associated units and documents.')) {
+      return;
+    }
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(`/api/semesters/${semesterId}`, {
+        method: 'DELETE'
+      });
+      
+      if (!response.ok) throw new Error('Failed to delete semester');
+      
+      // Refresh semesters
+      if (selectedYear) {
+        fetchSemesters(selectedYear.id!);
+      }
+    } catch (error) {
+      setError('Error deleting semester: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+  
+  async function handleDeleteUnit(unitId: number) {
+    if (!confirm('Are you sure you want to delete this unit? This will delete all associated documents.')) {
+      return;
+    }
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      const response = await fetch(`/api/units/${unitId}`, {
+        method: 'DELETE'
+      });
+      
+      if (!response.ok) throw new Error('Failed to delete unit');
+      
+      // Refresh units
+      if (selectedSemester) {
+        fetchUnits(selectedSemester.id!);
+      }
+    } catch (error) {
+      setError('Error deleting unit: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+  
+  // Add the JSX return statement for the component
+  return (
+    <div className="w-full">
+      {error && (
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4" role="alert">
+          <p>{error}</p>
+        </div>
+      )}
+      
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-2xl font-bold">Course Structure</h2>
+        <Button onClick={() => setShowCourseDialog(true)} className="flex items-center gap-2">
+          <Plus size={16} /> Add Course
+        </Button>
+      </div>
+      
+      {isLoading && (
+        <div className="flex justify-center py-8">
+          <Loader2 className="animate-spin h-8 w-8 text-gray-500" />
+        </div>
+      )}
+      
+      {!isLoading && (
+        <Tabs defaultValue="browse" className="w-full">
+          <TabsList className="mb-4">
+            <TabsTrigger value="browse">Browse</TabsTrigger>
+          </TabsList>
+          
+          <TabsContent value="browse" className="space-y-4">
+            {/* Course List */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {courses.map(course => (
+                <Card key={course.id} className={`cursor-pointer transition-all ${selectedCourse?.id === course.id ? 'ring-2 ring-primary' : ''}`} onClick={() => setSelectedCourse(course)}>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="flex items-center gap-2">
+                      <Book size={18} />
+                      {course.name}
+                    </CardTitle>
+                    {course.description && <CardDescription>{course.description}</CardDescription>}
+                  </CardHeader>
+                  <CardFooter className="pt-2 flex justify-between">
+                    <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleDeleteCourse(course.id!) }}>
+                      <Trash2 size={16} className="text-red-500" />
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); setSelectedCourse(course) }}>
+                      <ChevronRight size={16} />
+                    </Button>
+                  </CardFooter>
+                </Card>
+              ))}
+            </div>
+            
+            {/* Show selected course and its years */}
+            {selectedCourse && (
+              <div className="mt-8">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-xl font-semibold flex items-center gap-2">
+                    <School size={20} />
+                    {selectedCourse.name} - Years
+                  </h3>
+                  <Button onClick={() => setShowYearDialog(true)} className="flex items-center gap-2">
+                    <Plus size={16} /> Add Year
+                  </Button>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {years.map(year => (
+                    <Card key={year.id} className={`cursor-pointer transition-all ${selectedYear?.id === year.id ? 'ring-2 ring-primary' : ''}`} onClick={() => setSelectedYear(year)}>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="flex items-center gap-2">
+                          <PenLine size={18} />
+                          {year.name}
+                        </CardTitle>
+                        <CardDescription>Year {year.year_number}</CardDescription>
+                      </CardHeader>
+                      <CardFooter className="pt-2 flex justify-between">
+                        <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleDeleteYear(year.id!) }}>
+                          <Trash2 size={16} className="text-red-500" />
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); setSelectedYear(year) }}>
+                          <ChevronRight size={16} />
+                        </Button>
+                      </CardFooter>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            {/* Show selected year and its semesters */}
+            {selectedYear && (
+              <div className="mt-8">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-xl font-semibold flex items-center gap-2">
+                    <BookOpen size={20} />
+                    {selectedYear.name} - Semesters
+                  </h3>
+                  <Button onClick={() => setShowSemesterDialog(true)} className="flex items-center gap-2">
+                    <Plus size={16} /> Add Semester
+                  </Button>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {semesters.map(semester => (
+                    <Card key={semester.id} className={`cursor-pointer transition-all ${selectedSemester?.id === semester.id ? 'ring-2 ring-primary' : ''}`} onClick={() => setSelectedSemester(semester)}>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="flex items-center gap-2">
+                          <BookOpen size={18} />
+                          {semester.name}
+                        </CardTitle>
+                        <CardDescription>Semester {semester.semester_number}</CardDescription>
+                      </CardHeader>
+                      <CardFooter className="pt-2 flex justify-between">
+                        <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); handleDeleteSemester(semester.id!) }}>
+                          <Trash2 size={16} className="text-red-500" />
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); setSelectedSemester(semester) }}>
+                          <ChevronRight size={16} />
+                        </Button>
+                      </CardFooter>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+            )}
+            
+            {/* Show selected semester and its units */}
+            {selectedSemester && (
+              <div className="mt-8">
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-xl font-semibold flex items-center gap-2">
+                    <FileText size={20} />
+                    {selectedSemester.name} - Units
+                  </h3>
+                  <Button onClick={() => setShowUnitDialog(true)} className="flex items-center gap-2">
+                    <Plus size={16} /> Add Unit
+                  </Button>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {units.map(unit => (
+                    <Card key={unit.id}>
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <FileText size={18} />
+                          {unit.name}
+                        </CardTitle>
+                        <CardDescription>{unit.code}</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        {unit.description}
+                      </CardContent>
+                      <CardFooter className="flex justify-between">
+                        <Button variant="ghost" size="sm" onClick={() => handleDeleteUnit(unit.id!)}>
+                          <Trash2 size={16} className="text-red-500" />
+                        </Button>
+                      </CardFooter>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
+      )}
+      
+      {/* Course Dialog */}
+      <Dialog open={showCourseDialog} onOpenChange={setShowCourseDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add New Course</DialogTitle>
+            <DialogDescription>
+              Create a new course to organize your academic content
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label htmlFor="name">Course Name</Label>
+              <Input
+                id="name"
+                value={courseForm.name}
+                onChange={(e) => setCourseForm({ ...courseForm, name: e.target.value })}
+                placeholder="e.g. Computer Science"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="description">Description (Optional)</Label>
+              <Textarea
+                id="description"
+                value={courseForm.description}
+                onChange={(e) => setCourseForm({ ...courseForm, description: e.target.value })}
+                placeholder="Brief description of the course"
+              />
+            </div>
+          </div>
+          
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCourseDialog(false)}>Cancel</Button>
+            <Button onClick={handleCreateCourse} disabled={!courseForm.name || isLoading}>
+              {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+              Create Course
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      
+      {/* Year Dialog */}
+      <Dialog open={showYearDialog} onOpenChange={setShowYearDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add New Year</DialogTitle>
+            <DialogDescription>
+              Create a new academic year for {selectedCourse?.name}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label htmlFor="yearName">Year Name</Label>
+              <Input
+                id="yearName"
+                value={yearForm.name}
+                onChange={(e) => setYearForm({ ...yearForm, name: e.target.value })}
+                placeholder="e.g. First Year"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="yearNumber">Year Number</Label>
+              <Input
+                id="yearNumber"
+                type="number"
+                value={yearForm.year_number}
+                onChange={(e) => setYearForm({ ...yearForm, year_number: e.target.value })}
+                placeholder="e.g. 1"
+              />
+            </div>
+          </div>
+          
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowYearDialog(false)}>Cancel</Button>
+            <Button onClick={handleCreateYear} disabled={!yearForm.name || !yearForm.year_number || isLoading}>
+              {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+              Create Year
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      
+      {/* Semester Dialog */}
+      <Dialog open={showSemesterDialog} onOpenChange={setShowSemesterDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add New Semester</DialogTitle>
+            <DialogDescription>
+              Create a new semester for {selectedYear?.name}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label htmlFor="semesterName">Semester Name</Label>
+              <Input
+                id="semesterName"
+                value={semesterForm.name}
+                onChange={(e) => setSemesterForm({ ...semesterForm, name: e.target.value })}
+                placeholder="e.g. Fall Semester"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="semesterNumber">Semester Number</Label>
+              <Input
+                id="semesterNumber"
+                type="number"
+                value={semesterForm.semester_number}
+                onChange={(e) => setSemesterForm({ ...semesterForm, semester_number: e.target.value })}
+                placeholder="e.g. 1"
+              />
+            </div>
+          </div>
+          
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowSemesterDialog(false)}>Cancel</Button>
+            <Button onClick={handleCreateSemester} disabled={!semesterForm.name || !semesterForm.semester_number || isLoading}>
+              {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+              Create Semester
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      
+      {/* Unit Dialog */}
+      <Dialog open={showUnitDialog} onOpenChange={setShowUnitDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add New Unit</DialogTitle>
+            <DialogDescription>
+              Create a new unit for {selectedSemester?.name}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label htmlFor="unitName">Unit Name</Label>
+              <Input
+                id="unitName"
+                value={unitForm.name}
+                onChange={(e) => setUnitForm({ ...unitForm, name: e.target.value })}
+                placeholder="e.g. Introduction to Programming"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="unitCode">Unit Code</Label>
+              <Input
+                id="unitCode"
+                value={unitForm.code}
+                onChange={(e) => setUnitForm({ ...unitForm, code: e.target.value })}
+                placeholder="e.g. CS101"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="unitDescription">Description (Optional)</Label>
+              <Textarea
+                id="unitDescription"
+                value={unitForm.description}
+                onChange={(e) => setUnitForm({ ...unitForm, description: e.target.value })}
+                placeholder="Brief description of the unit"
+              />
+            </div>
+          </div>
+          
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowUnitDialog(false)}>Cancel</Button>
+            <Button onClick={handleCreateUnit} disabled={!unitForm.name || !unitForm.code || isLoading}>
+              {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+              Create Unit
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}File: ./components/pdf-uploader.tsx
+"use client"
+
+import { useState, useEffect } from "react"
+import { useSearchParams } from "next/navigation"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent } from "@/components/ui/card"
+import { FileUp, Check, X, Loader2, AlertCircle, ChevronDown } from "lucide-react"
+import { uploadPdfs } from "@/app/api/client"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Label } from "@/components/ui/label"
+
+// Define these types locally to avoid import errors
+interface Course {
+  id?: number;
+  name: string;
+  description?: string;
+}
+
+interface Year {
+  id?: number;
+  course_id: number;
+  year_number: number;
+  name: string;
+}
+
+interface Semester {
+  id?: number;
+  year_id: number;
+  semester_number: number;
+  name: string;
+}
+
+interface Unit {
+  id?: number;
+  semester_id: number;
+  code: string;
+  name: string;
+  description?: string;
+}
+
+export function PdfUploader() {
+  const searchParams = useSearchParams()
+  const preselectedUnitId = searchParams.get('unitId')
+  
+  const [files, setFiles] = useState<File[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState<{ [key: string]: "success" | "error" | "uploading" }>({})
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  
+  // Course structure state
+  const [courses, setCourses] = useState<Course[]>([])
+  const [years, setYears] = useState<Year[]>([])
+  const [semesters, setSemesters] = useState<Semester[]>([])
+  const [units, setUnits] = useState<Unit[]>([])
+  
+  const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null)
+  const [selectedYearId, setSelectedYearId] = useState<string | null>(null)
+  const [selectedSemesterId, setSelectedSemesterId] = useState<string | null>(null)
+  const [selectedUnitId, setSelectedUnitId] = useState<string | null>(preselectedUnitId)
+  
+  const [loadingStructure, setLoadingStructure] = useState(false)
+  
+  // Fetch courses on component mount
+  useEffect(() => {
+    fetchCourses()
+  }, [])
+  
+  // Fetch years when course is selected
+  useEffect(() => {
+    if (selectedCourseId) {
+      fetchYears(selectedCourseId)
+    } else {
+      setYears([])
+      setSelectedYearId(null)
+    }
+  }, [selectedCourseId])
+  
+  // Fetch semesters when year is selected
+  useEffect(() => {
+    if (selectedYearId) {
+      fetchSemesters(selectedYearId)
+    } else {
+      setSemesters([])
+      setSelectedSemesterId(null)
+    }
+  }, [selectedYearId])
+  
+  // Fetch units when semester is selected
+  useEffect(() => {
+    if (selectedSemesterId) {
+      fetchUnits(selectedSemesterId)
+    } else {
+      setUnits([])
+      setSelectedUnitId(null)
+    }
+  }, [selectedSemesterId])
+  
+  // Fetch needed data if preselected unitId is provided
+  useEffect(() => {
+    if (preselectedUnitId) {
+      fetchUnitHierarchy(preselectedUnitId)
+    }
+  }, [preselectedUnitId])
+  
+  // API functions for course structure
+  async function fetchCourses() {
+    setLoadingStructure(true)
+    try {
+      const response = await fetch('/api/courses')
+      if (!response.ok) throw new Error('Failed to fetch courses')
+      const data = await response.json()
+      setCourses(data)
+    } catch (error) {
+      setErrorMessage('Error loading courses: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setLoadingStructure(false)
+    }
+  }
+  
+  async function fetchYears(courseId: string) {
+    setLoadingStructure(true)
+    try {
+      const response = await fetch(`/api/courses/${courseId}/years`)
+      if (!response.ok) throw new Error('Failed to fetch years')
+      const data = await response.json()
+      setYears(data)
+    } catch (error) {
+      setErrorMessage('Error loading years: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setLoadingStructure(false)
+    }
+  }
+  
+  async function fetchSemesters(yearId: string) {
+    setLoadingStructure(true)
+    try {
+      const response = await fetch(`/api/years/${yearId}/semesters`)
+      if (!response.ok) throw new Error('Failed to fetch semesters')
+      const data = await response.json()
+      setSemesters(data)
+    } catch (error) {
+      setErrorMessage('Error loading semesters: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setLoadingStructure(false)
+    }
+  }
+  
+  async function fetchUnits(semesterId: string) {
+    setLoadingStructure(true)
+    try {
+      const response = await fetch(`/api/semesters/${semesterId}/units`)
+      if (!response.ok) throw new Error('Failed to fetch units')
+      const data = await response.json()
+      setUnits(data)
+    } catch (error) {
+      setErrorMessage('Error loading units: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setLoadingStructure(false)
+    }
+  }
+  
+  // If a unit is preselected, fetch its full hierarchy (course, year, semester)
+  async function fetchUnitHierarchy(unitId: string) {
+    setLoadingStructure(true)
+    try {
+      // First, get the unit details
+      const unitResponse = await fetch(`/api/units/${unitId}`)
+      if (!unitResponse.ok) throw new Error('Failed to fetch unit details')
+      const unit = await unitResponse.json()
+      
+      // Get semester details
+      const semesterResponse = await fetch(`/api/semesters/${unit.semester_id}`)
+      if (!semesterResponse.ok) throw new Error('Failed to fetch semester details')
+      const semester = await semesterResponse.json()
+      setSelectedSemesterId(semester.id.toString())
+      
+      // Get year details
+      const yearResponse = await fetch(`/api/years/${semester.year_id}`)
+      if (!yearResponse.ok) throw new Error('Failed to fetch year details')
+      const year = await yearResponse.json()
+      setSelectedYearId(year.id.toString())
+      
+      // Get course details and fetch dependencies
+      setSelectedCourseId(year.course_id.toString())
+      
+      // Now fetch the lists at each level
+      const coursesResponse = await fetch('/api/courses')
+      if (!coursesResponse.ok) throw new Error('Failed to fetch courses')
+      const courses = await coursesResponse.json()
+      setCourses(courses)
+      
+      const yearsResponse = await fetch(`/api/courses/${year.course_id}/years`)
+      if (!yearsResponse.ok) throw new Error('Failed to fetch years')
+      const years = await yearsResponse.json()
+      setYears(years)
+      
+      const semestersResponse = await fetch(`/api/years/${year.id}/semesters`)
+      if (!semestersResponse.ok) throw new Error('Failed to fetch semesters')
+      const semesters = await semestersResponse.json()
+      setSemesters(semesters)
+      
+      const unitsResponse = await fetch(`/api/semesters/${semester.id}/units`)
+      if (!unitsResponse.ok) throw new Error('Failed to fetch units')
+      const units = await unitsResponse.json()
+      setUnits(units)
+      
+      // Finally set the selected unit
+      setSelectedUnitId(unitId)
+    } catch (error) {
+      setErrorMessage('Error loading unit hierarchy: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setLoadingStructure(false)
+    }
+  }
+  
+  // Handle both drag and drop and file selection
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      const newFiles = Array.from(e.target.files).filter(
+        (file) => file.type === "application/pdf" || file.name.toLowerCase().endsWith('.pdf')
+      )
+      setFiles((prevFiles) => [...prevFiles, ...newFiles])
+      setErrorMessage(null)
+    }
+  }
+
+  // Handle drag over event
+  const handleDragOver = (e: React.DragEvent<HTMLLabelElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
+  // Handle drop event
+  const handleDrop = (e: React.DragEvent<HTMLLabelElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    
+    if (e.dataTransfer.files) {
+      const newFiles = Array.from(e.dataTransfer.files).filter(
+        (file) => file.type === "application/pdf" || file.name.toLowerCase().endsWith('.pdf')
+      )
+      
+      if (newFiles.length === 0) {
+        setErrorMessage("Only PDF files are accepted.")
+        return
+      }
+      
+      setFiles((prevFiles) => [...prevFiles, ...newFiles])
+      setErrorMessage(null)
+    }
+  }
+
+  const handleUpload = async () => {
+    if (files.length === 0) {
+      setErrorMessage("Please select at least one PDF file to upload.")
+      return
+    }
+    
+    if (!selectedUnitId) {
+      setErrorMessage("Please select a unit to upload files to.")
+      return
+    }
+
+    setUploading(true)
+    setErrorMessage(null)
+    setSuccessMessage(null)
+
+    // Create a new status object with all files set to 'uploading'
+    const newStatus: { [key: string]: "success" | "error" | "uploading" } = {}
+    files.forEach((file) => {
+      newStatus[file.name] = "uploading"
+    })
+    setUploadStatus(newStatus)
+
+    try {
+      // Create FormData with files and unitId
+      const formData = new FormData()
+      files.forEach((file) => {
+        formData.append('files', file)
+      })
+      formData.append('unitId', selectedUnitId)
+      
+      // Send to our modified upload endpoint
+      const response = await fetch('/api/upload', {
+        method: 'POST',
+        body: formData,
+      })
+      
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Upload failed')
+      }
+      
+      const result = await response.json()
+      
+      // Update file status based on results
+      const successStatus: { [key: string]: "success" | "error" | "uploading" } = {}
+      const fileResults = result.results || []
+      
+      fileResults.forEach((fileResult: any) => {
+        successStatus[fileResult.name] = fileResult.success ? "success" : "error"
+      })
+      
+      setUploadStatus(successStatus)
+      setSuccessMessage(result.message || "Files uploaded successfully")
+    } catch (error) {
+      // Update all files to error
+      const errorStatus: { [key: string]: "success" | "error" | "uploading" } = {}
+      files.forEach((file) => {
+        errorStatus[file.name] = "error"
+      })
+      setUploadStatus(errorStatus)
+      
+      console.error("Error uploading files:", error)
+      setErrorMessage(error instanceof Error ? error.message : "Failed to upload files")
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const removeFile = (fileName: string) => {
+    setFiles(files.filter((file) => file.name !== fileName))
+    setUploadStatus((prev) => {
+      const newStatus = { ...prev }
+      delete newStatus[fileName]
+      return newStatus
+    })
+    
+    // Clear error message if no files left
+    if (files.length <= 1) {
+      setErrorMessage(null)
+    }
+  }
+
+  const clearAllFiles = () => {
+    setFiles([])
+    setUploadStatus({})
+    setErrorMessage(null)
+    setSuccessMessage(null)
+  }
+
+  return (
+    <div className="space-y-8">
+      {/* Course structure selection */}
+      <Card>
+        <CardContent className="p-6">
+          <div className="space-y-4">
+            <h3 className="text-lg font-medium">Select Course Location</h3>
+            <p className="text-sm text-gray-500">Choose where to upload your documents</p>
+            
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="course-select">Course</Label>
+                <Select 
+                  value={selectedCourseId || ""} 
+                  onValueChange={setSelectedCourseId}
+                  disabled={loadingStructure}
+                >
+                  <SelectTrigger id="course-select" className="w-full">
+                    <SelectValue placeholder="Select a course" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {courses.map(course => (
+                      <SelectItem key={course.id} value={course.id?.toString() || ""}>
+                        {course.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              
+              {selectedCourseId && (
+                <div>
+                  <Label htmlFor="year-select">Year</Label>
+                  <Select 
+                    value={selectedYearId || ""} 
+                    onValueChange={setSelectedYearId}
+                    disabled={loadingStructure || years.length === 0}
+                  >
+                    <SelectTrigger id="year-select" className="w-full">
+                      <SelectValue placeholder="Select a year" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {years.map(year => (
+                        <SelectItem key={year.id} value={year.id?.toString() || ""}>
+                          {year.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              
+              {selectedYearId && (
+                <div>
+                  <Label htmlFor="semester-select">Semester</Label>
+                  <Select 
+                    value={selectedSemesterId || ""} 
+                    onValueChange={setSelectedSemesterId}
+                    disabled={loadingStructure || semesters.length === 0}
+                  >
+                    <SelectTrigger id="semester-select" className="w-full">
+                      <SelectValue placeholder="Select a semester" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {semesters.map(semester => (
+                        <SelectItem key={semester.id} value={semester.id?.toString() || ""}>
+                          {semester.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              
+              {selectedSemesterId && (
+                <div>
+                  <Label htmlFor="unit-select">Unit</Label>
+                  <Select 
+                    value={selectedUnitId || ""} 
+                    onValueChange={setSelectedUnitId}
+                    disabled={loadingStructure || units.length === 0}
+                  >
+                    <SelectTrigger id="unit-select" className="w-full">
+                      <SelectValue placeholder="Select a unit" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {units.map(unit => (
+                        <SelectItem key={unit.id} value={unit.id?.toString() || ""}>
+                          {unit.code} - {unit.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+              
+              {loadingStructure && (
+                <div className="flex items-center justify-center py-4">
+                  <Loader2 className="h-6 w-6 animate-spin text-gray-400 mr-2" />
+                  <span>Loading...</span>
+                </div>
+              )}
+              
+              {!selectedCourseId && !loadingStructure && (
+                <div className="p-3 bg-yellow-50 text-yellow-800 rounded-md flex items-start">
+                  <AlertCircle className="h-5 w-5 mr-2 mt-0.5 flex-shrink-0" />
+                  <div>
+                    Please select a course, year, semester, and unit to upload documents to.
+                    If no options are available, please <a href="/course" className="underline">create your course structure</a> first.
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      
+      {/* File upload section */}
+      <Card>
+        <CardContent className="pt-6">
+          <div className="flex flex-col items-center justify-center w-full">
+            <label
+              htmlFor="dropzone-file"
+              className="flex flex-col items-center justify-center w-full h-64 border-2 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100 border-gray-300"
+              onDragOver={handleDragOver}
+              onDrop={handleDrop}
+            >
+              <div className="flex flex-col items-center justify-center pt-5 pb-6">
+                <FileUp className="w-10 h-10 mb-3 text-gray-400" />
+                <p className="mb-2 text-sm text-gray-500">
+                  <span className="font-semibold">Click to upload</span> or drag and drop
+                </p>
+                <p className="text-xs text-gray-500">PDF files only</p>
+              </div>
+              <input
+                id="dropzone-file"
+                type="file"
+                className="hidden"
+                accept=".pdf,application/pdf"
+                multiple
+                onChange={handleFileChange}
+                disabled={uploading || !selectedUnitId}
+              />
+            </label>
+
+            {successMessage && (
+              <div className="mt-4 p-3 bg-green-50 text-green-700 rounded-md w-full flex items-start">
+                <Check className="h-5 w-5 mr-2 mt-0.5 flex-shrink-0" />
+                <div className="whitespace-pre-line">{successMessage}</div>
+              </div>
+            )}
+
+            {errorMessage && (
+              <div className="mt-4 p-3 bg-red-50 text-red-700 rounded-md w-full flex items-start">
+                <AlertCircle className="h-5 w-5 mr-2 mt-0.5 flex-shrink-0" />
+                <div>{errorMessage}</div>
+              </div>
+            )}
+
+            {files.length > 0 && (
+              <div className="w-full mt-6">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-lg font-medium">Selected Files ({files.length})</h3>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={clearAllFiles} 
+                    disabled={uploading}
+                  >
+                    Clear All
+                  </Button>
+                </div>
+                
+                <div className="space-y-2">
+                  {files.map((file, index) => (
+                    <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-md">
+                      <span className="text-sm truncate max-w-[70%]">{file.name}</span>
+                      <div className="flex items-center">
+                        {uploadStatus[file.name] === "uploading" && (
+                          <Loader2 className="h-5 w-5 animate-spin text-gray-400 mr-2" />
+                        )}
+                        {uploadStatus[file.name] === "success" && <Check className="h-5 w-5 text-green-500 mr-2" />}
+                        {uploadStatus[file.name] === "error" && <X className="h-5 w-5 text-red-500 mr-2" />}
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          onClick={() => removeFile(file.name)} 
+                          disabled={uploading}
+                          className="ml-2"
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <Button 
+                  className="w-full mt-4" 
+                  onClick={handleUpload} 
+                  disabled={uploading || files.length === 0 || !selectedUnitId}
+                >
+                  {uploading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Uploading...
+                    </>
+                  ) : (
+                    "Upload Files"
+                  )}
+                </Button>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}File: ./components/question-interface.tsx
+"use client"
+
+import { useState, useEffect } from "react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Card, CardContent } from "@/components/ui/card"
+import { Loader2, Search, FileText, AlertCircle, Filter } from "lucide-react"
+import { askQuestion as askQuestionApi, SourceInfo, pingBackend } from "@/app/api/client"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Label } from "@/components/ui/label"
+import { Course, Year, Semester, Unit } from '@/lib/models'
+
+export function QuestionInterface() {
+  const [question, setQuestion] = useState("")
+  const [answer, setAnswer] = useState("")
+  const [sources, setSources] = useState<SourceInfo[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [history, setHistory] = useState<Array<{question: string, answer: string, sources: SourceInfo[]}>>([])
+  
+  // Course structure state
+  const [courses, setCourses] = useState<Course[]>([])
+  const [years, setYears] = useState<Year[]>([])
+  const [semesters, setSemesters] = useState<Semester[]>([])
+  const [units, setUnits] = useState<Unit[]>([])
+  
+  const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null)
+  const [selectedYearId, setSelectedYearId] = useState<string | null>(null)
+  const [selectedSemesterId, setSelectedSemesterId] = useState<string | null>(null)
+  const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null)
+  
+  const [loadingStructure, setLoadingStructure] = useState(false)
+  const [showFilters, setShowFilters] = useState(false)
+  
+  // Fetch courses on component mount
+  useEffect(() => {
+    fetchCourses()
+  }, [])
+  
+  // Fetch years when course is selected
+  useEffect(() => {
+    if (selectedCourseId) {
+      fetchYears(selectedCourseId)
+    } else {
+      setYears([])
+      setSelectedYearId(null)
+    }
+  }, [selectedCourseId])
+  
+  // Fetch semesters when year is selected
+  useEffect(() => {
+    if (selectedYearId) {
+      fetchSemesters(selectedYearId)
+    } else {
+      setSemesters([])
+      setSelectedSemesterId(null)
+    }
+  }, [selectedYearId])
+  
+  // Fetch units when semester is selected
+  useEffect(() => {
+    if (selectedSemesterId) {
+      fetchUnits(selectedSemesterId)
+    } else {
+      setUnits([])
+      setSelectedUnitId(null)
+    }
+  }, [selectedSemesterId])
+  
+  // API functions for course structure
+  async function fetchCourses() {
+    setLoadingStructure(true)
+    try {
+      const response = await fetch('/api/courses')
+      if (!response.ok) throw new Error('Failed to fetch courses')
+      const data = await response.json()
+      setCourses(data)
+    } catch (error) {
+      setError('Error loading courses: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setLoadingStructure(false)
+    }
+  }
+  
+  async function fetchYears(courseId: string) {
+    setLoadingStructure(true)
+    try {
+      const response = await fetch(`/api/courses/${courseId}/years`)
+      if (!response.ok) throw new Error('Failed to fetch years')
+      const data = await response.json()
+      setYears(data)
+    } catch (error) {
+      setError('Error loading years: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setLoadingStructure(false)
+    }
+  }
+  
+  async function fetchSemesters(yearId: string) {
+    setLoadingStructure(true)
+    try {
+      const response = await fetch(`/api/years/${yearId}/semesters`)
+      if (!response.ok) throw new Error('Failed to fetch semesters')
+      const data = await response.json()
+      setSemesters(data)
+    } catch (error) {
+      setError('Error loading semesters: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setLoadingStructure(false)
+    }
+  }
+  
+  async function fetchUnits(semesterId: string) {
+    setLoadingStructure(true)
+    try {
+      const response = await fetch(`/api/semesters/${semesterId}/units`)
+      if (!response.ok) throw new Error('Failed to fetch units')
+      const data = await response.json()
+      setUnits(data)
+    } catch (error) {
+      setError('Error loading units: ' + (error instanceof Error ? error.message : 'Unknown error'))
+    } finally {
+      setLoadingStructure(false)
+    }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!question.trim()) return
+
+    setIsLoading(true)
+    setAnswer("")
+    setSources([])
+    setError(null)
+
+    console.log("Submitting question:", question)
+
+    try {
+      // Check backend connectivity
+      const isConnected = await pingBackend()
+      if (!isConnected) {
+        throw new Error("Cannot reach the backend API. The ngrok tunnel may have expired.")
+      }
+      
+      // Send question to enhanced API with course filters
+      const response = await fetch('/api/ask', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          question,
+          courseId: selectedCourseId,
+          yearId: selectedYearId,
+          semesterId: selectedSemesterId,
+          unitId: selectedUnitId
+        }),
+      })
+      
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || "Failed to process question")
+      }
+      
+      const result = await response.json()
+      
+      // Check if we got a valid response
+      if (!result) {
+        console.error("Response is undefined or null")
+        throw new Error("Received empty response from server")
+      }
+
+      // Check the answer field
+      console.log("Answer field:", result.answer)
+      
+      // Save the current question and result
+      const currentQA = {
+        question: question,
+        answer: result.answer || "No answer received",
+        sources: result.sources && Array.isArray(result.sources) ? result.sources : []
+      }
+      
+      setAnswer(result.answer || "No answer received")
+      
+      // Set sources if they're available
+      if (result.sources && Array.isArray(result.sources)) {
+        console.log("Setting sources:", result.sources)
+        setSources(result.sources)
+      } else {
+        console.log("No valid sources in response")
+      }
+      
+      // Add to history
+      setHistory(prev => [currentQA, ...prev])
+      
+    } catch (error) {
+      console.error("Error asking question (full details):", error)
+      setError(error instanceof Error ? error.message : "Failed to process question")
+      setAnswer("Sorry, there was an error processing your question. Please try again.")
+    } finally {
+      setIsLoading(false)
+      console.log("Request completed, loading state reset")
+    }
+  }
+  
+  // Function to try a sample question
+  const tryExampleQuestion = (exampleQuestion: string) => {
+    setQuestion(exampleQuestion)
+    // Auto-submit the form with the example question
+    setTimeout(() => {
+      const form = document.querySelector('form') as HTMLFormElement;
+      if (form) form.dispatchEvent(new Event('submit', { cancelable: true }));
+    }, 100);
+  }
+  
+  // Get a human-readable description of the current filter
+  const getFilterDescription = () => {
+    if (!selectedCourseId) return "All documents"
+    
+    const course = courses.find(c => c.id?.toString() === selectedCourseId)
+    if (!selectedYearId) return `All documents in ${course?.name || 'the selected course'}`
+    
+    const year = years.find(y => y.id?.toString() === selectedYearId)
+    if (!selectedSemesterId) return `All documents in ${year?.name || 'the selected year'}`
+    
+    const semester = semesters.find(s => s.id?.toString() === selectedSemesterId)
+    if (!selectedUnitId) return `All documents in ${semester?.name || 'the selected semester'}`
+    
+    const unit = units.find(u => u.id?.toString() === selectedUnitId)
+    return `Documents in ${unit?.name || 'the selected unit'}`
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Course structure filters */}
+      <div>
+        <Button 
+          variant="outline" 
+          size="sm"
+          onClick={() => setShowFilters(!showFilters)}
+          className="mb-4"
+        >
+          <Filter className="h-4 w-4 mr-2" />
+          {showFilters ? "Hide Filters" : "Show Filters"}
+        </Button>
+        
+        {showFilters && (
+          <Card className="mb-4">
+            <CardContent className="p-4 space-y-4">
+              <h3 className="font-medium">Filter documents by course structure</h3>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div>
+                  <Label htmlFor="course-select">Course</Label>
+                  <Select 
+                    value={selectedCourseId || "all-courses"} 
+                    onValueChange={setSelectedCourseId}
+                    disabled={loadingStructure}
+                  >
+                    <SelectTrigger id="course-select" className="w-full">
+                      <SelectValue placeholder="All courses" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all-courses">All courses</SelectItem>
+                      {courses.map(course => (
+                        <SelectItem key={course.id} value={course.id?.toString() || ""}>
+                          {course.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                {selectedCourseId && selectedCourseId !== "all-courses" && (
+                  <div>
+                    <Label htmlFor="year-select">Year</Label>
+                    <Select 
+                      value={selectedYearId || "all-years"} 
+                      onValueChange={setSelectedYearId}
+                      disabled={loadingStructure || years.length === 0}
+                    >
+                      <SelectTrigger id="year-select" className="w-full">
+                        <SelectValue placeholder="All years" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all-years">All years</SelectItem>
+                        {years.map(year => (
+                          <SelectItem key={year.id} value={year.id?.toString() || ""}>
+                            {year.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                
+                {selectedYearId && selectedYearId !== "all-years" && (
+                  <div>
+                    <Label htmlFor="semester-select">Semester</Label>
+                    <Select 
+                      value={selectedSemesterId || "all-semesters"} 
+                      onValueChange={setSelectedSemesterId}
+                      disabled={loadingStructure || semesters.length === 0}
+                    >
+                      <SelectTrigger id="semester-select" className="w-full">
+                        <SelectValue placeholder="All semesters" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all-semesters">All semesters</SelectItem>
+                        {semesters.map(semester => (
+                          <SelectItem key={semester.id} value={semester.id?.toString() || ""}>
+                            {semester.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+                
+                {selectedSemesterId && selectedSemesterId !== "all-semesters" && (
+                  <div>
+                    <Label htmlFor="unit-select">Unit</Label>
+                    <Select 
+                      value={selectedUnitId || "all-units"} 
+                      onValueChange={setSelectedUnitId}
+                      disabled={loadingStructure || units.length === 0}
+                    >
+                      <SelectTrigger id="unit-select" className="w-full">
+                        <SelectValue placeholder="All units" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all-units">All units</SelectItem>
+                        {units.map(unit => (
+                          <SelectItem key={unit.id} value={unit.id?.toString() || ""}>
+                            {unit.code} - {unit.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+              
+              {loadingStructure && (
+                <div className="flex items-center justify-center py-2">
+                  <Loader2 className="h-4 w-4 animate-spin text-gray-400 mr-2" />
+                  <span className="text-sm text-gray-500">Loading...</span>
+                </div>
+              )}
+              
+              <div className="text-sm font-medium text-gray-500">
+                Currently searching: {getFilterDescription()}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+      
+      <form onSubmit={handleSubmit} className="flex w-full space-x-2">
+        <Input
+          value={question}
+          onChange={(e) => setQuestion(e.target.value)}
+          placeholder="Ask a question about your documents..."
+          className="flex-1"
+          disabled={isLoading}
+        />
+        <Button type="submit" disabled={isLoading || !question.trim()}>
+          {isLoading ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              Processing
+            </>
+          ) : (
+            <>
+              <Search className="mr-2 h-4 w-4" />
+              Ask
+            </>
+          )}
+        </Button>
+      </form>
+
+      {/* Example questions section */}
+      <div className="text-sm text-gray-500">
+        <p>Try asking:</p>
+        <div className="flex flex-wrap gap-2 mt-2">
+          {["What are the main topics in my documents?", 
+            "Can you summarize the key points?", 
+            "What evidence supports the main argument?"].map((example, i) => (
+            <button
+              key={i}
+              onClick={() => tryExampleQuestion(example)}
+              className="px-3 py-1 bg-gray-100 rounded-full text-xs hover:bg-gray-200 transition-colors"
+            >
+              {example}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error && (
+        <div className="p-3 bg-red-50 text-red-700 rounded-md flex items-start">
+          <AlertCircle className="h-5 w-5 mr-2 mt-0.5 flex-shrink-0" />
+          <div>{error}</div>
+        </div>
+      )}
+
+      {(answer || isLoading) && (
+        <Card className="mt-6">
+          <CardContent className="pt-6">
+            {isLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+                <span className="ml-3 text-gray-600">Searching documents and generating answer...</span>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-lg font-medium mb-2">Answer</h3>
+                  <div className="text-gray-700 whitespace-pre-line p-4 bg-gray-50 rounded-md">{answer}</div>
+                </div>
+
+                {sources.length > 0 && (
+                  <div>
+                    <h3 className="text-lg font-medium mb-2">Sources</h3>
+                    <div className="space-y-3">
+                      {sources.map((source, index) => (
+                        <div key={index} className="p-4 bg-gray-50 rounded-md">
+                          <div className="flex items-center text-sm font-medium text-gray-700 mb-2">
+                            <FileText className="h-4 w-4 mr-2" />
+                            {source.title}
+                          </div>
+                          <p className="text-sm text-gray-600">{source.excerpt}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+      
+      {/* Previous questions and answers */}
+      {history.length > 1 && (
+        <div className="mt-8">
+          <h3 className="text-lg font-medium mb-4">Previous Questions</h3>
+          <div className="space-y-6">
+            {history.slice(1).map((item, index) => (
+              <Card key={index} className="bg-gray-50">
+                <CardContent className="pt-4">
+                  <p className="font-medium text-gray-900 mb-2">Q: {item.question}</p>
+                  <p className="text-gray-700 mb-2">A: {item.answer}</p>
+                  {item.sources.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-sm font-medium text-gray-600">Sources:</p>
+                      <ul className="text-xs text-gray-500 ml-4 list-disc">
+                        {item.sources.map((source, i) => (
+                          <li key={i}>{source.title}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

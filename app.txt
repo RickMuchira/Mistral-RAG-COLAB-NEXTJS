@@ -1,0 +1,1731 @@
+===== FILE: app/api/ask/route.ts =====
+// app/api/ask/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { DocumentModel } from '@/lib/models';
+import { pingBackend, askQuestion as askQuestionApi } from '@/app/api/client';
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    
+    if (!body.question) {
+      return NextResponse.json(
+        { error: 'Question is required' },
+        { status: 400 }
+      );
+    }
+    
+    const { question, courseId, yearId, semesterId, unitId } = body;
+    
+    // Check if backend is reachable
+    const isConnected = await pingBackend();
+    if (!isConnected) {
+      return NextResponse.json(
+        { error: 'Cannot reach the backend API. The ngrok tunnel may have expired.' },
+        { status: 503 }
+      );
+    }
+    
+    // Fetch documents based on filters
+    let documentsMetadata = [];
+    if (unitId) {
+      documentsMetadata = DocumentModel.getAllByUnit(Number(unitId));
+    } else if (semesterId) {
+      // Get all units in this semester, then get documents for each unit
+      // This would require a new model method
+      documentsMetadata = []; // Replace with actual implementation
+    } else if (yearId) {
+      // Get all documents for this year
+      // This would require a new model method
+      documentsMetadata = []; // Replace with actual implementation
+    } else if (courseId) {
+      documentsMetadata = DocumentModel.getAllByCourse(Number(courseId));
+    } else {
+      // No filter, get all documents
+      documentsMetadata = DocumentModel.getAllWithHierarchy();
+    }
+    
+    // If no documents match the filter, return an error
+    if (documentsMetadata.length === 0) {
+      return NextResponse.json({
+        answer: "There are no documents uploaded for the selected criteria. Please upload documents first.",
+        sources: []
+      });
+    }
+    
+    // Note: At this point, we would ideally pass the document filter information to the backend
+    // For now, we'll just call the backend API as usual and add contextual information to the response
+    
+    // Call the backend API to ask the question
+    try {
+      const result = await askQuestionApi(question);
+      
+      // Add context about what documents were searched
+      let contextInfo = "";
+      if (unitId) {
+        contextInfo = `Searched documents from a specific unit.`;
+      } else if (semesterId) {
+        contextInfo = `Searched documents from a specific semester.`;
+      } else if (yearId) {
+        contextInfo = `Searched documents from a specific year.`;
+      } else if (courseId) {
+        contextInfo = `Searched documents from a specific course.`;
+      } else {
+        contextInfo = `Searched all available documents.`;
+      }
+      
+      return NextResponse.json({
+        ...result,
+        context: contextInfo
+      });
+      
+    } catch (apiError) {
+      console.error('Error calling backend API:', apiError);
+      return NextResponse.json(
+        { 
+          error: 'Failed to process question with backend API', 
+          details: apiError instanceof Error ? apiError.message : 'Unknown error'
+        }, 
+        { status: 500 }
+      );
+    }
+  } catch (error) {
+    console.error('Error processing ask request:', error);
+    return NextResponse.json(
+      { error: 'Failed to process question' },
+      { status: 500 }
+    );
+  }
+}
+
+
+===== FILE: app/api/client.ts =====
+// app/api/client.ts
+export interface SourceInfo {
+  title: string;
+  excerpt: string;
+}
+
+export interface AskResponse {
+  answer: string;
+  sources: SourceInfo[];
+}
+
+/**
+ * Your ngrok Backend API URL
+ * IMPORTANT: This URL needs to be updated when you restart your Colab
+ */
+const API_BASE_URL = process.env.NEXT_PUBLIC_BACKEND_API_URL || 'https://cd8b-34-143-191-121.ngrok-free.app';
+
+// Add a ping function to test connection
+export async function pingBackend(): Promise<boolean> {
+  try {
+    console.log('Testing backend connection to:', `${API_BASE_URL}/ping`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    
+    const response = await fetch(`${API_BASE_URL}/ping`, {
+      method: 'GET',
+      mode: 'cors',
+      headers: {
+        'Accept': 'application/json',
+        'ngrok-skip-browser-warning': 'true'
+      },
+      cache: 'no-cache',
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+    console.log('Ping response status:', response.status);
+    return response.ok;
+  } catch (error) {
+    console.error('Backend connection test failed:', error);
+    return false;
+  }
+}
+
+/**
+ * Upload PDF files to the backend
+ */
+export async function uploadPdfs(files: File[], unitId: string): Promise<{ message: string }> {
+  const formData = new FormData();
+  
+  files.forEach((file) => {
+    formData.append('files', file);
+  });
+  
+  // Add unitId to the form data
+  formData.append('unitId', unitId);
+  
+  try {
+    // Upload to our local Next.js endpoint which will handle backend processing
+    console.log('Uploading files via local endpoint with unitId:', unitId);
+    
+    const response = await fetch('/api/upload', {
+      method: 'POST',
+      body: formData,
+    });
+    
+    console.log('Upload response status:', response.status);
+    
+    if (!response.ok) {
+      let errorMessage = 'Upload failed';
+      try {
+        const errorData = await response.json();
+        errorMessage = errorData.error || errorMessage;
+      } catch (e) {
+        try {
+          const errorText = await response.text();
+          errorMessage = errorText || errorMessage;
+        } catch (e2) {
+          errorMessage = `Upload failed: ${response.status} ${response.statusText}`;
+        }
+      }
+      throw new Error(errorMessage);
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('Upload error details:', error);
+    throw error;
+  }
+}
+
+/**
+ * Ask a question about the uploaded documents
+ */
+export async function askQuestion(question: string, courseId?: number, yearId?: number, semesterId?: number, unitId?: number): Promise<AskResponse> {
+  try {
+    console.log('Sending question to backend:', question);
+    
+    // First verify the backend is reachable
+    const isConnected = await pingBackend();
+    if (!isConnected) {
+      throw new Error('Cannot reach the backend API. The ngrok tunnel may have expired.');
+    }
+    
+    // Create request body with filtering parameters
+    const requestBody: any = { question };
+    if (courseId) requestBody.courseId = courseId;
+    if (yearId) requestBody.yearId = yearId;
+    if (semesterId) requestBody.semesterId = semesterId;
+    if (unitId) requestBody.unitId = unitId;
+    
+    console.log('Request body:', requestBody);
+    
+    // Add timeout for long-running requests
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+    
+    const response = await fetch(`${API_BASE_URL}/ask`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'ngrok-skip-browser-warning': 'true'
+      },
+      mode: 'cors',
+      cache: 'no-cache',
+      credentials: 'omit', // Don't send cookies
+      body: JSON.stringify(requestBody),
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+    console.log('Ask response status:', response.status);
+    
+    if (!response.ok) {
+      let errorMessage = 'Failed to process question';
+      try {
+        const errorData = await response.json();
+        errorMessage = errorData.error || errorMessage;
+      } catch (e) {
+        try {
+          const errorText = await response.text();
+          errorMessage = errorText || errorMessage;
+        } catch (e2) {
+          errorMessage = `Question processing failed: ${response.status} ${response.statusText}`;
+        }
+      }
+      throw new Error(errorMessage);
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('Question processing error:', error);
+    throw error;
+  }
+}
+
+
+===== FILE: app/api/courses/[id]/route.ts =====
+// app/api/courses/[id]/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { CourseModel } from '@/lib/models';
+
+// GET /api/courses/[id] - Get a specific course
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const id = parseInt(params.id);
+    if (isNaN(id)) {
+      return NextResponse.json(
+        { error: 'Invalid course ID' },
+        { status: 400 }
+      );
+    }
+
+    const course = CourseModel.getById(id);
+    if (!course) {
+      return NextResponse.json(
+        { error: 'Course not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json(course);
+  } catch (error) {
+    console.error('Error fetching course:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch course' },
+      { status: 500 }
+    );
+  }
+}
+
+// PUT /api/courses/[id] - Update a course
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const id = parseInt(params.id);
+    if (isNaN(id)) {
+      return NextResponse.json(
+        { error: 'Invalid course ID' },
+        { status: 400 }
+      );
+    }
+
+    const body = await request.json();
+    
+    // Validate required fields
+    if (!body.name) {
+      return NextResponse.json(
+        { error: 'Name is required' },
+        { status: 400 }
+      );
+    }
+    
+    const course = {
+      name: body.name,
+      description: body.description || '',
+    };
+    
+    const success = CourseModel.update(id, course);
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Course not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({ id, ...course });
+  } catch (error) {
+    console.error('Error updating course:', error);
+    return NextResponse.json(
+      { error: 'Failed to update course' },
+      { status: 500 }
+    );
+  }
+}
+
+// DELETE /api/courses/[id] - Delete a course
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const id = parseInt(params.id);
+    if (isNaN(id)) {
+      return NextResponse.json(
+        { error: 'Invalid course ID' },
+        { status: 400 }
+      );
+    }
+
+    const success = CourseModel.delete(id);
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Course not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting course:', error);
+    return NextResponse.json(
+      { error: 'Failed to delete course' },
+      { status: 500 }
+    );
+  }
+}
+
+
+===== FILE: app/api/courses/[id]/years/route.ts =====
+// app/api/courses/[id]/years/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { YearModel, Year } from '@/lib/models';
+
+// GET /api/courses/[id]/years - Get all years for a course
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const courseId = parseInt(params.id);
+    if (isNaN(courseId)) {
+      return NextResponse.json(
+        { error: 'Invalid course ID' },
+        { status: 400 }
+      );
+    }
+
+    const years = YearModel.getAllByCourse(courseId);
+    return NextResponse.json(years);
+  } catch (error) {
+    console.error('Error fetching years:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch years' },
+      { status: 500 }
+    );
+  }
+}
+
+// POST /api/courses/[id]/years - Create a new year for a course
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const courseId = parseInt(params.id);
+    if (isNaN(courseId)) {
+      return NextResponse.json(
+        { error: 'Invalid course ID' },
+        { status: 400 }
+      );
+    }
+
+    const body = await request.json();
+    
+    // Validate required fields
+    if (!body.name || !body.year_number) {
+      return NextResponse.json(
+        { error: 'Name and year_number are required' },
+        { status: 400 }
+      );
+    }
+    
+    const year: Year = {
+      course_id: courseId,
+      year_number: body.year_number,
+      name: body.name,
+    };
+    
+    const newYear = YearModel.create(year);
+    return NextResponse.json(newYear, { status: 201 });
+  } catch (error) {
+    console.error('Error creating year:', error);
+    return NextResponse.json(
+      { error: 'Failed to create year' },
+      { status: 500 }
+    );
+  }
+}
+
+
+===== FILE: app/api/courses/route.ts =====
+// app/api/courses/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { CourseModel, Course } from '@/lib/models';
+
+// GET /api/courses - Get all courses
+export async function GET() {
+  try {
+    const courses = CourseModel.getAll();
+    return NextResponse.json(courses);
+  } catch (error) {
+    console.error('Error fetching courses:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch courses' },
+      { status: 500 }
+    );
+  }
+}
+
+// POST /api/courses - Create a new course
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    
+    // Validate required fields
+    if (!body.name) {
+      return NextResponse.json(
+        { error: 'Name is required' },
+        { status: 400 }
+      );
+    }
+    
+    const course: Course = {
+      name: body.name,
+      description: body.description || '',
+    };
+    
+    const newCourse = CourseModel.create(course);
+    return NextResponse.json(newCourse, { status: 201 });
+  } catch (error) {
+    console.error('Error creating course:', error);
+    return NextResponse.json(
+      { error: 'Failed to create course' },
+      { status: 500 }
+    );
+  }
+}
+
+
+===== FILE: app/api/semesters/[id]/route.ts =====
+// app/api/semesters/[id]/route.ts
+import { NextRequest, NextResponse find app -type f | sort | while read file; do 
+  echo "===== FILE: $file =====" >> app.txt
+  cat "$file" >> app.txt
+  echo -e "\n\n" >> app.txt
+done} from 'next/server';
+import { SemesterModel } from '@/lib/models';
+
+// GET /api/semesters/[id] - Get a specific semester
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const id = parseInt(params.id);
+    if (isNaN(id)) {
+      return NextResponse.json(
+        { error: 'Invalid semester ID' },
+        { status: 400 }
+      );
+    }
+
+    const semester = SemesterModel.getById(id);
+    if (!semester) {
+      return NextResponse.json(
+        { error: 'Semester not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json(semester);
+  } catch (error) {
+    console.error('Error fetching semester:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch semester' },
+      { status: 500 }
+    );
+  }
+}
+
+// PUT /api/semesters/[id] - Update a semester
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const id = parseInt(params.id);
+    if (isNaN(id)) {
+      return NextResponse.json(
+        { error: 'Invalid semester ID' },
+        { status: 400 }
+      );
+    }
+
+    const body = await request.json();
+    
+    // Validate required fields
+    if (!body.name || !body.semester_number) {
+      return NextResponse.json(
+        { error: 'Name and semester_number are required' },
+        { status: 400 }
+      );
+    }
+    
+    const semester = {
+      semester_number: body.semester_number,
+      name: body.name,
+    };
+    
+    const success = SemesterModel.update(id, semester);
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Semester not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({ id, ...semester });
+  } catch (error) {
+    console.error('Error updating semester:', error);
+    return NextResponse.json(
+      { error: 'Failed to update semester' },
+      { status: 500 }
+    );
+  }
+}
+
+// DELETE /api/semesters/[id] - Delete a semester
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const id = parseInt(params.id);
+    if (isNaN(id)) {
+      return NextResponse.json(
+        { error: 'Invalid semester ID' },
+        { status: 400 }
+      );
+    }
+
+    const success = SemesterModel.delete(id);
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Semester not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting semester:', error);
+    return NextResponse.json(
+      { error: 'Failed to delete semester' },
+      { status: 500 }
+    );
+  }
+}
+
+
+===== FILE: app/api/semesters/[id]/units/route.ts =====
+// app/api/semesters/[id]/units/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { UnitModel, Unit } from '@/lib/models';
+
+// GET /api/semesters/[id]/units - Get all units for a semester
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    // Make sure to await/handle params properly
+    const id = params?.id;
+    if (!id) {
+      return NextResponse.json(
+        { error: 'Missing semester ID' },
+        { status: 400 }
+      );
+    }
+
+    const semesterId = parseInt(id);
+    if (isNaN(semesterId)) {
+      return NextResponse.json(
+        { error: 'Invalid semester ID' },
+        { status: 400 }
+      );
+    }
+
+    const units = UnitModel.getAllBySemester(semesterId);
+    return NextResponse.json(units);
+  } catch (error) {
+    console.error('Error fetching units:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch units' },
+      { status: 500 }
+    );
+  }
+}
+
+// POST /api/semesters/[id]/units - Create a new unit for a semester
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    // Make sure to await/handle params properly
+    const id = params?.id;
+    if (!id) {
+      return NextResponse.json(
+        { error: 'Missing semester ID' },
+        { status: 400 }
+      );
+    }
+
+    const semesterId = parseInt(id);
+    if (isNaN(semesterId)) {
+      return NextResponse.json(
+        { error: 'Invalid semester ID' },
+        { status: 400 }
+      );
+    }
+
+    const body = await request.json();
+    
+    // Validate required fields
+    if (!body.name || !body.code) {
+      return NextResponse.json(
+        { error: 'Name and code are required' },
+        { status: 400 }
+      );
+    }
+    
+    const unit: Unit = {
+      semester_id: semesterId,
+      code: body.code,
+      name: body.name,
+      description: body.description || '',
+    };
+    
+    const newUnit = UnitModel.create(unit);
+    return NextResponse.json(newUnit, { status: 201 });
+  } catch (error) {
+    console.error('Error creating unit:', error);
+    return NextResponse.json(
+      { error: 'Failed to create unit' },
+      { status: 500 }
+    );
+  }
+}
+
+
+===== FILE: app/api/units/[id]/route.ts =====
+// app/api/units/[id]/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { UnitModel } from '@/lib/models';
+
+// GET /api/units/[id] - Get a specific unit
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const id = parseInt(params.id);
+    if (isNaN(id)) {
+      return NextResponse.json(
+        { error: 'Invalid unit ID' },
+        { status: 400 }
+      );
+    }
+
+    const unit = UnitModel.getById(id);
+    if (!unit) {
+      return NextResponse.json(
+        { error: 'Unit not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json(unit);
+  } catch (error) {
+    console.error('Error fetching unit:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch unit' },
+      { status: 500 }
+    );
+  }
+}
+
+// PUT /api/units/[id] - Update a unit
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const id = parseInt(params.id);
+    if (isNaN(id)) {
+      return NextResponse.json(
+        { error: 'Invalid unit ID' },
+        { status: 400 }
+      );
+    }
+
+    const body = await request.json();
+    
+    // Validate required fields
+    if (!body.name || !body.code) {
+      return NextResponse.json(
+        { error: 'Name and code are required' },
+        { status: 400 }
+      );
+    }
+    
+    const unit = {
+      code: body.code,
+      name: body.name,
+      description: body.description || '',
+    };
+    
+    const success = UnitModel.update(id, unit);
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Unit not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({ id, ...unit });
+  } catch (error) {
+    console.error('Error updating unit:', error);
+    return NextResponse.json(
+      { error: 'Failed to update unit' },
+      { status: 500 }
+    );
+  }
+}
+
+// DELETE /api/units/[id] - Delete a unit
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const id = parseInt(params.id);
+    if (isNaN(id)) {
+      return NextResponse.json(
+        { error: 'Invalid unit ID' },
+        { status: 400 }
+      );
+    }
+
+    const success = UnitModel.delete(id);
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Unit not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting unit:', error);
+    return NextResponse.json(
+      { error: 'Failed to delete unit' },
+      { status: 500 }
+    );
+  }
+}
+
+
+===== FILE: app/api/upload/route.ts =====
+// app/api/upload/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { DocumentModel, UnitModel } from '@/lib/models';
+import path from 'path';
+import fs from 'fs';
+import { writeFile } from 'fs/promises';
+import { v4 as uuidv4 } from 'uuid';
+
+// Define storage directory
+const uploadDir = path.join(process.cwd(), 'uploads');
+
+// Ensure the directory exists
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+// Get backend API URL from environment or use default
+const API_BASE_URL = process.env.NEXT_PUBLIC_BACKEND_API_URL || 'https://c6bf-34-143-191-121.ngrok-free.app';
+
+export async function POST(request: NextRequest) {
+  try {
+    const formData = await request.formData();
+    const files = formData.getAll('files') as File[];
+    const unitId = formData.get('unitId');
+    
+    // Validate unitId
+    if (!unitId || isNaN(Number(unitId))) {
+      return NextResponse.json(
+        { error: 'Invalid or missing unitId' },
+        { status: 400 }
+      );
+    }
+    
+    // Verify the unit exists
+    const unit = UnitModel.getById(Number(unitId));
+    if (!unit) {
+      return NextResponse.json(
+        { error: 'Unit not found' },
+        { status: 404 }
+      );
+    }
+    
+    if (!files || files.length === 0) {
+      return NextResponse.json(
+        { error: 'No files provided' },
+        { status: 400 }
+      );
+    }
+
+    const results = [];
+    const savedFiles = [];
+
+    // Generate a unit-specific directory
+    const unitDir = path.join(uploadDir, `unit-${unitId}`);
+    if (!fs.existsSync(unitDir)) {
+      fs.mkdirSync(unitDir, { recursive: true });
+    }
+
+    for (const file of files) {
+      if (!file.name.toLowerCase().endsWith('.pdf')) {
+        results.push({
+          name: file.name,
+          success: false,
+          error: 'Only PDF files are allowed'
+        });
+        continue;
+      }
+
+      try {
+        // Generate a unique filename to avoid collisions
+        const uniqueFilename = `${uuidv4()}-${file.name.replace(/\s+/g, '_')}`;
+        const filePath = path.join(unitDir, uniqueFilename);
+        
+        // Convert file to Buffer and save it
+        const buffer = Buffer.from(await file.arrayBuffer());
+        await writeFile(filePath, buffer);
+        
+        // Save file info to database
+        const documentRecord = DocumentModel.create({
+          unit_id: Number(unitId),
+          filename: uniqueFilename,
+          original_filename: file.name,
+          file_path: filePath,
+        });
+        
+        results.push({
+          name: file.name,
+          success: true,
+          id: documentRecord.id
+        });
+        
+        savedFiles.push({
+          id: documentRecord.id,
+          path: filePath,
+          name: file.name
+        });
+      } catch (error) {
+        console.error(`Error saving file ${file.name}:`, error);
+        results.push({
+          name: file.name,
+          success: false,
+          error: 'Failed to save file'
+        });
+      }
+    }
+
+    // Send files to backend for processing
+    try {
+      console.log(`Sending files to backend at ${API_BASE_URL}/upload`);
+      
+      // Check backend connectivity first
+      try {
+        const pingResponse = await fetch(`${API_BASE_URL}/ping`, {
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json',
+            'ngrok-skip-browser-warning': 'true'
+          }
+        });
+        
+        if (!pingResponse.ok) {
+          throw new Error(`Backend not reachable: ${pingResponse.status}`);
+        }
+        
+        console.log('Backend ping successful');
+      } catch (pingError) {
+        console.error('Backend ping failed:', pingError);
+        return NextResponse.json({
+          message: `Files uploaded locally but backend is not available for processing.`,
+          results
+        }, { status: 207 });
+      }
+      
+      // Create form data for backend upload
+      const backendFormData = new FormData();
+      
+      // Add files to form data
+      for (const savedFile of savedFiles) {
+        // Read the file back from disk
+        const fileBuffer = await fs.promises.readFile(savedFile.path);
+        
+        // Create blob and append to form data
+        const fileBlob = new Blob([fileBuffer]);
+        backendFormData.append('files', fileBlob, savedFile.name);
+      }
+      
+      // Add unitId to the form
+      backendFormData.append('unitId', unitId.toString());
+      
+      // Send to backend for processing
+      const backendResponse = await fetch(`${API_BASE_URL}/upload`, {
+        method: 'POST',
+        headers: {
+          'ngrok-skip-browser-warning': 'true'
+        },
+        body: backendFormData
+      });
+      
+      if (!backendResponse.ok) {
+        throw new Error(`Backend upload failed: ${backendResponse.status}`);
+      }
+      
+      const backendResult = await backendResponse.json();
+      console.log('Backend processing result:', backendResult);
+      
+      return NextResponse.json({
+        message: `Uploaded ${results.filter(r => r.success).length} files successfully. Backend processing: ${backendResult.message || 'Completed'}`,
+        results,
+        backendResult
+      });
+      
+    } catch (backendError) {
+      console.error('Backend processing error:', backendError);
+      
+      return NextResponse.json({
+        message: `Files uploaded locally but there was an error with backend processing.`,
+        results,
+        backendError: backendError instanceof Error ? backendError.message : 'Unknown error'
+      }, { status: 207 });
+    }
+  } catch (error) {
+    console.error('Upload error:', error);
+    return NextResponse.json(
+      { error: 'Failed to process upload' },
+      { status: 500 }
+    );
+  }
+}
+
+
+===== FILE: app/api/years/[id]/route.ts =====
+// app/api/years/[id]/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { YearModel } from '@/lib/models';
+
+// GET /api/years/[id] - Get a specific year
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const id = parseInt(params.id);
+    if (isNaN(id)) {
+      return NextResponse.json(
+        { error: 'Invalid year ID' },
+        { status: 400 }
+      );
+    }
+
+    const year = YearModel.getById(id);
+    if (!year) {
+      return NextResponse.json(
+        { error: 'Year not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json(year);
+  } catch (error) {
+    console.error('Error fetching year:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch year' },
+      { status: 500 }
+    );
+  }
+}
+
+// PUT /api/years/[id] - Update a year
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const id = parseInt(params.id);
+    if (isNaN(id)) {
+      return NextResponse.json(
+        { error: 'Invalid year ID' },
+        { status: 400 }
+      );
+    }
+
+    const body = await request.json();
+    
+    // Validate required fields
+    if (!body.name || !body.year_number) {
+      return NextResponse.json(
+        { error: 'Name and year_number are required' },
+        { status: 400 }
+      );
+    }
+    
+    const year = {
+      year_number: body.year_number,
+      name: body.name,
+    };
+    
+    const success = YearModel.update(id, year);
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Year not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({ id, ...year });
+  } catch (error) {
+    console.error('Error updating year:', error);
+    return NextResponse.json(
+      { error: 'Failed to update year' },
+      { status: 500 }
+    );
+  }
+}
+
+// DELETE /api/years/[id] - Delete a year
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const id = parseInt(params.id);
+    if (isNaN(id)) {
+      return NextResponse.json(
+        { error: 'Invalid year ID' },
+        { status: 400 }
+      );
+    }
+
+    const success = YearModel.delete(id);
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Year not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting year:', error);
+    return NextResponse.json(
+      { error: 'Failed to delete year' },
+      { status: 500 }
+    );
+  }
+}
+
+
+===== FILE: app/api/years/[id]/semesters/route.ts =====
+// app/api/years/[id]/semesters/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { SemesterModel, Semester } from '@/lib/models';
+
+// GET /api/years/[id]/semesters - Get all semesters for a year
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const yearId = parseInt(params.id);
+    if (isNaN(yearId)) {
+      return NextResponse.json(
+        { error: 'Invalid year ID' },
+        { status: 400 }
+      );
+    }
+
+    const semesters = SemesterModel.getAllByYear(yearId);
+    return NextResponse.json(semesters);
+  } catch (error) {
+    console.error('Error fetching semesters:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch semesters' },
+      { status: 500 }
+    );
+  }
+}
+
+// POST /api/years/[id]/semesters - Create a new semester for a year
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const yearId = parseInt(params.id);
+    if (isNaN(yearId)) {
+      return NextResponse.json(
+        { error: 'Invalid year ID' },
+        { status: 400 }
+      );
+    }
+
+    const body = await request.json();
+    
+    // Validate required fields
+    if (!body.name || !body.semester_number) {
+      return NextResponse.json(
+        { error: 'Name and semester_number are required' },
+        { status: 400 }
+      );
+    }
+    
+    const semester: Semester = {
+      year_id: yearId,
+      semester_number: body.semester_number,
+      name: body.name,
+    };
+    
+    const newSemester = SemesterModel.create(semester);
+    return NextResponse.json(newSemester, { status: 201 });
+  } catch (error) {
+    console.error('Error creating semester:', error);
+    return NextResponse.json(
+      { error: 'Failed to create semester' },
+      { status: 500 }
+    );
+  }
+}
+
+
+===== FILE: app/ask/page.tsx =====
+import { QuestionInterface } from "@/components/question-interface"
+
+export default function AskPage() {
+  return (
+    <main className="flex min-h-screen flex-col items-center p-4 md:p-24">
+      <div className="w-full max-w-3xl mx-auto">
+        <h1 className="text-3xl font-bold mb-2 text-center">Ask Questions</h1>
+        <p className="text-gray-600 mb-8 text-center">
+          Get answers from your uploaded documents using AI
+        </p>
+        <QuestionInterface />
+      </div>
+    </main>
+  )
+}
+
+
+===== FILE: app/course/page.tsx =====
+'use client'
+import { CourseManager } from '@/components/course-manager'
+
+export default function CoursePage() {
+  return (
+    <main className="flex min-h-screen flex-col items-center p-4 md:p-24">
+      <div className="w-full max-w-4xl mx-auto">
+        <h1 className="text-3xl font-bold mb-2 text-center">Course Management</h1>
+        <p className="text-gray-600 mb-8 text-center">
+          Create and manage your course structure for document organization
+        </p>
+        <CourseManager />
+      </div>
+    </main>
+  )
+}
+
+===== FILE: app/globals.css =====
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+
+
+===== FILE: app/layout.tsx =====
+import type React from "react"
+import "@/app/globals.css"
+import type { Metadata } from "next"
+import { Inter } from "next/font/google"
+import Link from "next/link"
+import { Button } from "@/components/ui/button"
+import { FileUp, MessageSquare } from "lucide-react"
+
+const inter = Inter({ subsets: ["latin"] })
+
+export const metadata: Metadata = {
+  title: "RAG Document System",
+  description: "Upload documents and ask questions",
+}
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <html lang="en">
+      <body className={inter.className}>
+        <header className="border-b">
+          <div className="container flex items-center justify-between h-16 mx-auto">
+            <Link href="/" className="text-xl font-bold">
+              DocumentAI
+            </Link>
+            <nav className="flex items-center gap-4">
+              <Link href="/upload">
+                <Button variant="outline" className="gap-2">
+                  <FileUp className="h-4 w-4" />
+                  Upload
+                </Button>
+              </Link>
+              <Link href="/ask">
+                <Button className="gap-2">
+                  <MessageSquare className="h-4 w-4" />
+                  Ask Questions
+                </Button>
+              </Link>
+            </nav>
+          </div>
+        </header>
+        {children}
+      </body>
+    </html>
+  )
+}
+
+
+
+===== FILE: app/lib/database.ts =====
+// lib/database.ts
+import sqlite3 from 'sqlite3'
+import { open } from 'sqlite'
+
+class Database {
+  private db: any;
+
+  constructor() {
+    this.init();
+  }
+
+  async init() {
+    try {
+      this.db = await open({
+        filename: './courses.db',
+        driver: sqlite3.Database
+      });
+
+      // Create tables if they don't exist
+      await this.createTables();
+    } catch (error) {
+      console.error('Database initialization error:', error);
+    }
+  }
+
+  async createTables() {
+    // Courses table
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS courses (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        code TEXT UNIQUE NOT NULL,
+        department TEXT NOT NULL,
+        description TEXT,
+        year INTEGER NOT NULL
+      )
+    `);
+
+    // Semesters table
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS semesters (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        year INTEGER NOT NULL,
+        course_id TEXT NOT NULL,
+        FOREIGN KEY(course_id) REFERENCES courses(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Units table
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS units (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        order_number INTEGER NOT NULL,
+        semester_id TEXT NOT NULL,
+        FOREIGN KEY(semester_id) REFERENCES semesters(id) ON DELETE CASCADE
+      )
+    `);
+
+    // Documents table
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS documents (
+        id TEXT PRIMARY KEY,
+        unit_id TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        upload_date TEXT NOT NULL,
+        document_type TEXT NOT NULL,
+        metadata TEXT,
+        FOREIGN KEY(unit_id) REFERENCES units(id) ON DELETE CASCADE
+      )
+    `);
+  }
+
+  // Generic query method
+  async query(sql: string, params: any[] = []) {
+    if (!this.db) {
+      await this.init();
+    }
+    return this.db.all(sql, params);
+  }
+
+  // Generic run method for insert/update/delete
+  async run(sql: string, params: any[] = []) {
+    if (!this.db) {
+      await this.init();
+    }
+    return this.db.run(sql, params);
+  }
+}
+
+export const db = new Database();
+
+
+===== FILE: app/lib/services/courseService.ts =====
+// lib/services/courseService.ts
+import { v4 as uuidv4 } from 'uuid'
+import { db } from '../database'
+
+export interface Course {
+  id?: string
+  name: string
+  code: string
+  department: string
+  description?: string
+  year: number
+}
+
+export class CourseService {
+  // Create a new course
+  async createCourse(course: Course): Promise<Course> {
+    const id = uuidv4()
+    const { name, code, department, description, year } = course
+    
+    await db.run(
+      `INSERT INTO courses 
+      (id, name, code, department, description, year) 
+      VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, name, code, department, description || null, year]
+    )
+    
+    return { ...course, id }
+  }
+
+  // Get all courses
+  async getCourses(options?: {
+    limit?: number
+    offset?: number
+    search?: string
+  }): Promise<Course[]> {
+    let query = 'SELECT * FROM courses'
+    const params: any[] = []
+
+    if (options?.search) {
+      query += ' WHERE name LIKE ? OR code LIKE ? OR department LIKE ?'
+      const searchTerm = `%${options.search}%`
+      params.push(searchTerm, searchTerm, searchTerm)
+    }
+
+    if (options?.limit) {
+      query += ' LIMIT ?'
+      params.push(options.limit)
+    }
+
+    if (options?.offset) {
+      query += ' OFFSET ?'
+      params.push(options.offset)
+    }
+
+    return db.query(query, params)
+  }
+
+  // Get course by ID with full hierarchy
+  async getCourseById(id: string): Promise<any> {
+    // Fetch course with its semesters, units, and documents
+    const course = await db.query(
+      `SELECT c.*,
+        (SELECT json_group_array(
+          json_object(
+            'id', s.id, 
+            'name', s.name, 
+            'year', s.year,
+            'units', (
+              SELECT json_group_array(
+                json_object(
+                  'id', u.id,
+                  'name', u.name,
+                  'description', u.description,
+                  'order_number', u.order_number,
+                  'documents', (
+                    SELECT json_group_array(
+                      json_object(
+                        'id', d.id,
+                        'fileName', d.file_name,
+                        'filePath', d.file_path,
+                        'uploadDate', d.upload_date,
+                        'documentType', d.document_type
+                      )
+                    )
+                    FROM documents d
+                    WHERE d.unit_id = u.id
+                  )
+                )
+              )
+              FROM units u
+              WHERE u.semester_id = s.id
+            )
+          )
+        )
+        FROM semesters s
+        WHERE s.course_id = c.id
+      ) AS semesters
+      FROM courses c
+      WHERE c.id = ?`,
+      [id]
+    )
+
+    if (course.length === 0) return null
+
+    // Parse the JSON in semesters column
+    const fullCourse = course[0]
+    fullCourse.semesters = JSON.parse(fullCourse.semesters || '[]')
+    
+    return fullCourse
+  }
+
+  // Update a course
+  async updateCourse(id: string, courseData: Partial<Course>): Promise<Course | null> {
+    const updateFields = Object.keys(courseData)
+      .filter(key => key !== 'id')
+      .map(key => `${key} = ?`)
+      .join(', ')
+    
+    const values = Object.keys(courseData)
+      .filter(key => key !== 'id')
+      .map(key => courseData[key])
+    
+    values.push(id)
+
+    await db.run(
+      `UPDATE courses 
+      SET ${updateFields} 
+      WHERE id = ?`,
+      values
+    )
+
+    return this.getCourseById(id)
+  }
+
+  // Delete a course
+  async deleteCourse(id: string): Promise<boolean> {
+    await db.run('DELETE FROM courses WHERE id = ?', [id])
+    return true
+  }
+}
+
+export const courseService = new CourseService()
+
+
+===== FILE: app/lib/utils.ts =====
+
+import { type ClassValue, clsx } from "clsx"
+import { twMerge } from "tailwind-merge"
+
+/**
+ * Combines multiple class names into a single string, merging Tailwind CSS classes intelligently.
+ * This is used throughout the UI components for conditional class name application.
+ */
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
+
+
+===== FILE: app/page.tsx =====
+import Link from "next/link"
+import { Button } from "@/components/ui/button"
+import { FileUp, MessageSquare } from "lucide-react"
+
+export default function Home() {
+  return (
+    <main className="flex min-h-screen flex-col items-center justify-center p-4 md:p-24">
+      <div className="max-w-3xl mx-auto text-center">
+        <h1 className="text-4xl font-bold mb-4">Document Question Answering</h1>
+        <p className="text-xl text-gray-600 mb-8">
+          Upload your PDF documents and ask questions to get AI-powered answers
+        </p>
+
+        <div className="flex flex-col sm:flex-row gap-4 justify-center">
+          <Link href="/upload">
+            <Button size="lg" variant="outline" className="gap-2 w-full sm:w-auto">
+              <FileUp className="h-5 w-5" />
+              Upload Documents
+            </Button>
+          </Link>
+          <Link href="/ask">
+            <Button size="lg" className="gap-2 w-full sm:w-auto">
+              <MessageSquare className="h-5 w-5" />
+              Ask Questions
+            </Button>
+          </Link>
+        </div>
+      </div>
+    </main>
+  )
+}
+
+
+
+===== FILE: app/upload/page.tsx =====
+import { PdfUploader } from "@/components/pdf-uploader"
+
+export default function UploadPage() {
+  return (
+    <main className="flex min-h-screen flex-col items-center p-4 md:p-24">
+      <div className="w-full max-w-3xl mx-auto">
+        <h1 className="text-3xl font-bold mb-2 text-center">Document Upload</h1>
+        <p className="text-gray-600 mb-8 text-center">Upload PDF documents to your knowledge base</p>
+        <PdfUploader />
+      </div>
+    </main>
+  )
+}
+
+
+

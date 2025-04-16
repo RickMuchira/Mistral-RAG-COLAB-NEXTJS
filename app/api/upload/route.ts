@@ -14,6 +14,38 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
+// Get backend API URL from environment or use default
+const API_BASE_URL = process.env.NEXT_PUBLIC_BACKEND_API_URL || 'https://c6bf-34-143-191-121.ngrok-free.app';
+
+// Type definitions to fix TS errors
+interface UnitType {
+  id: number;
+  semester_id: number;
+  code: string;
+  name: string;
+  description?: string;
+}
+
+interface SemesterType {
+  id: number;
+  year_id: number;
+  semester_number: number;
+  name: string;
+}
+
+interface YearType {
+  id: number;
+  course_id: number;
+  year_number: number;
+  name: string;
+}
+
+interface CourseType {
+  id: number;
+  name: string;
+  description?: string;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
@@ -29,7 +61,7 @@ export async function POST(request: NextRequest) {
     }
     
     // Verify the unit exists
-    const unit = UnitModel.getById(Number(unitId));'uuid'
+    const unit = UnitModel.getById(Number(unitId)) as UnitType | null;
     if (!unit) {
       return NextResponse.json(
         { error: 'Unit not found' },
@@ -51,6 +83,46 @@ export async function POST(request: NextRequest) {
     const unitDir = path.join(uploadDir, `unit-${unitId}`);
     if (!fs.existsSync(unitDir)) {
       fs.mkdirSync(unitDir, { recursive: true });
+    }
+
+    // Attempt to fetch course hierarchy for metadata
+    let courseHierarchy: Record<string, any> = {};
+    try {
+      // Get semester information
+      const semesterId = unit.semester_id;
+      const semesterResponse = await fetch(`/api/semesters/${semesterId}`);
+      if (semesterResponse.ok) {
+        const semester = await semesterResponse.json() as SemesterType;
+        const yearId = semester.year_id;
+        
+        // Get year information
+        const yearResponse = await fetch(`/api/years/${yearId}`);
+        if (yearResponse.ok) {
+          const year = await yearResponse.json() as YearType;
+          const courseId = year.course_id;
+          
+          // Get course information
+          const courseResponse = await fetch(`/api/courses/${courseId}`);
+          if (courseResponse.ok) {
+            const course = await courseResponse.json() as CourseType;
+            
+            // Build course hierarchy object
+            courseHierarchy = {
+              course_id: courseId,
+              course_name: course.name,
+              year_id: yearId,
+              year_name: year.name,
+              semester_id: semesterId,
+              semester_name: semester.name,
+              unit_id: unitId,
+              unit_name: unit.name
+            };
+          }
+        }
+      }
+    } catch (hierarchyError) {
+      console.warn('Could not fetch complete course hierarchy:', hierarchyError);
+      // Continue without full hierarchy - not a critical error
     }
 
     for (const file of files) {
@@ -88,7 +160,8 @@ export async function POST(request: NextRequest) {
         
         savedFiles.push({
           id: documentRecord.id,
-          path: filePath
+          path: filePath,
+          name: file.name
         });
       } catch (error) {
         console.error(`Error saving file ${file.name}:`, error);
@@ -100,34 +173,110 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // If we have a backend API for processing PDFs, we should call it here
+    // If no files were successfully saved, return early
+    if (savedFiles.length === 0) {
+      return NextResponse.json({
+        message: 'No files were successfully saved.',
+        results
+      }, { status: 400 });
+    }
+
+    // Send files to backend for processing
     try {
-      // Placeholder for calling your backend Colab notebook API
-      // This would involve sending the saved files to your backend for processing
+      console.log(`Sending files to backend at ${API_BASE_URL}/upload`);
       
-      // Example: You would modify this to call your API endpoint in the backend
-      // For now, we're just logging that we would process these files
-      console.log('Files saved and ready for backend processing:', savedFiles);
+      // Check backend connectivity first
+      try {
+        const pingResponse = await fetch(`${API_BASE_URL}/ping`, {
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json',
+            'ngrok-skip-browser-warning': 'true'
+          }
+          // Remove the 'timeout' property as it's not in RequestInit
+        });
+        
+        if (!pingResponse.ok) {
+          throw new Error(`Backend not reachable: ${pingResponse.status}`);
+        }
+        
+        console.log('Backend ping successful');
+      } catch (pingError) {
+        console.error('Backend ping failed:', pingError);
+        return NextResponse.json({
+          message: `Files uploaded locally but backend is not available for processing. Please try again later.`,
+          results,
+          backendError: pingError instanceof Error ? pingError.message : 'Connection failed'
+        }, { status: 207 });
+      }
+      
+      // Create form data for backend upload
+      const backendFormData = new FormData();
+      
+      // Add files to form data
+      for (const savedFile of savedFiles) {
+        // Read the file back from disk
+        const fileBuffer = await fs.promises.readFile(savedFile.path);
+        
+        // Create blob and append to form data
+        const fileBlob = new Blob([fileBuffer]);
+        backendFormData.append('files', fileBlob, savedFile.name);
+      }
+      
+      // Add unitId to the form
+      backendFormData.append('unitId', unitId.toString());
+      
+      // Add course hierarchy metadata if available
+      if (Object.keys(courseHierarchy).length > 0) {
+        backendFormData.append('courseHierarchy', JSON.stringify(courseHierarchy));
+      }
+      
+      // Send to backend for processing with timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      
+      const backendResponse = await fetch(`${API_BASE_URL}/upload`, {
+        method: 'POST',
+        headers: {
+          'ngrok-skip-browser-warning': 'true'
+        },
+        body: backendFormData,
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (!backendResponse.ok) {
+        throw new Error(`Backend upload failed: ${backendResponse.status}`);
+      }
+      
+      const backendResult = await backendResponse.json();
+      console.log('Backend processing result:', backendResult);
       
       return NextResponse.json({
-        message: `Uploaded ${results.filter(r => r.success).length} files successfully.`,
-        results
+        message: `Uploaded ${results.filter(r => r.success).length} files successfully. Backend processing: ${backendResult.message || 'Completed'}`,
+        results,
+        backendResult
       });
       
     } catch (backendError) {
       console.error('Backend processing error:', backendError);
       
-      // Return partial success - files were saved but processing may have failed
+      // Make sure we return a proper error message
+      const errorMessage = backendError instanceof Error 
+        ? backendError.message 
+        : 'Unknown error during backend processing';
+      
       return NextResponse.json({
-        message: `Files uploaded but there was an error with backend processing.`,
+        message: `Files uploaded locally but there was an error with backend processing: ${errorMessage}`,
         results,
-        backendError: backendError instanceof Error ? backendError.message : 'Unknown error'
-      }, { status: 207 }); // 207 Multi-Status
+        backendError: errorMessage
+      }, { status: 207 });
     }
   } catch (error) {
     console.error('Upload error:', error);
     return NextResponse.json(
-      { error: 'Failed to process upload' },
+      { error: error instanceof Error ? error.message : 'Failed to process upload' },
       { status: 500 }
     );
   }

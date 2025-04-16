@@ -1,3 +1,4 @@
+//components/question-interface.tsx
 "use client"
 
 import { useState, useEffect } from "react"
@@ -5,10 +6,38 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
 import { Loader2, Search, FileText, AlertCircle, Filter } from "lucide-react"
-import { askQuestion as askQuestionApi, SourceInfo, pingBackend } from "@/app/api/client"
+import { SourceInfo } from "@/app/api/client"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
-import { Course, Year, Semester, Unit } from '@/lib/models'
+import { BackendStatus } from "@/components/backend-status"
+
+interface Course {
+  id?: number;
+  name: string;
+  description?: string;
+}
+
+interface Year {
+  id?: number;
+  course_id: number;
+  year_number: number;
+  name: string;
+}
+
+interface Semester {
+  id?: number;
+  year_id: number;
+  semester_number: number;
+  name: string;
+}
+
+interface Unit {
+  id?: number;
+  semester_id: number;
+  code: string;
+  name: string;
+  description?: string;
+}
 
 export function QuestionInterface() {
   const [question, setQuestion] = useState("")
@@ -31,6 +60,7 @@ export function QuestionInterface() {
   
   const [loadingStructure, setLoadingStructure] = useState(false)
   const [showFilters, setShowFilters] = useState(false)
+  const [contextMessage, setContextMessage] = useState<string | null>(null)
   
   // Fetch courses on component mount
   useEffect(() => {
@@ -39,7 +69,7 @@ export function QuestionInterface() {
   
   // Fetch years when course is selected
   useEffect(() => {
-    if (selectedCourseId) {
+    if (selectedCourseId && selectedCourseId !== "all-courses") {
       fetchYears(selectedCourseId)
     } else {
       setYears([])
@@ -49,7 +79,7 @@ export function QuestionInterface() {
   
   // Fetch semesters when year is selected
   useEffect(() => {
-    if (selectedYearId) {
+    if (selectedYearId && selectedYearId !== "all-years") {
       fetchSemesters(selectedYearId)
     } else {
       setSemesters([])
@@ -59,7 +89,7 @@ export function QuestionInterface() {
   
   // Fetch units when semester is selected
   useEffect(() => {
-    if (selectedSemesterId) {
+    if (selectedSemesterId && selectedSemesterId !== "all-semesters") {
       fetchUnits(selectedSemesterId)
     } else {
       setUnits([])
@@ -132,17 +162,12 @@ export function QuestionInterface() {
     setAnswer("")
     setSources([])
     setError(null)
+    setContextMessage(null)
 
     console.log("Submitting question:", question)
 
     try {
-      // Check backend connectivity
-      const isConnected = await pingBackend()
-      if (!isConnected) {
-        throw new Error("Cannot reach the backend API. The ngrok tunnel may have expired.")
-      }
-      
-      // Send question to enhanced API with course filters
+      // Send question to our Next.js API with course filters
       const response = await fetch('/api/ask', {
         method: 'POST',
         headers: {
@@ -150,10 +175,10 @@ export function QuestionInterface() {
         },
         body: JSON.stringify({
           question,
-          courseId: selectedCourseId,
-          yearId: selectedYearId,
-          semesterId: selectedSemesterId,
-          unitId: selectedUnitId
+          courseId: selectedCourseId !== "all-courses" ? selectedCourseId : undefined,
+          yearId: selectedYearId !== "all-years" ? selectedYearId : undefined,
+          semesterId: selectedSemesterId !== "all-semesters" ? selectedSemesterId : undefined,
+          unitId: selectedUnitId !== "all-units" ? selectedUnitId : undefined
         }),
       })
       
@@ -172,6 +197,11 @@ export function QuestionInterface() {
 
       // Check the answer field
       console.log("Answer field:", result.answer)
+      
+      // Set the context message if provided
+      if (result.context) {
+        setContextMessage(result.context)
+      }
       
       // Save the current question and result
       const currentQA = {
@@ -215,16 +245,16 @@ export function QuestionInterface() {
   
   // Get a human-readable description of the current filter
   const getFilterDescription = () => {
-    if (!selectedCourseId) return "All documents"
+    if (!selectedCourseId || selectedCourseId === "all-courses") return "All documents"
     
     const course = courses.find(c => c.id?.toString() === selectedCourseId)
-    if (!selectedYearId) return `All documents in ${course?.name || 'the selected course'}`
+    if (!selectedYearId || selectedYearId === "all-years") return `All documents in ${course?.name || 'the selected course'}`
     
     const year = years.find(y => y.id?.toString() === selectedYearId)
-    if (!selectedSemesterId) return `All documents in ${year?.name || 'the selected year'}`
+    if (!selectedSemesterId || selectedSemesterId === "all-semesters") return `All documents in ${year?.name || 'the selected year'}`
     
     const semester = semesters.find(s => s.id?.toString() === selectedSemesterId)
-    if (!selectedUnitId) return `All documents in ${semester?.name || 'the selected semester'}`
+    if (!selectedUnitId || selectedUnitId === "all-units") return `All documents in ${semester?.name || 'the selected semester'}`
     
     const unit = units.find(u => u.id?.toString() === selectedUnitId)
     return `Documents in ${unit?.name || 'the selected unit'}`
@@ -232,6 +262,9 @@ export function QuestionInterface() {
 
   return (
     <div className="space-y-6">
+      {/* Backend Status Indicator */}
+      <BackendStatus />
+      
       {/* Course structure filters */}
       <div>
         <Button 
@@ -254,7 +287,7 @@ export function QuestionInterface() {
                   <Label htmlFor="course-select">Course</Label>
                   <Select 
                     value={selectedCourseId || "all-courses"} 
-                    onValueChange={setSelectedCourseId}
+                    onValueChange={val => setSelectedCourseId(val)}
                     disabled={loadingStructure}
                   >
                     <SelectTrigger id="course-select" className="w-full">
@@ -276,7 +309,7 @@ export function QuestionInterface() {
                     <Label htmlFor="year-select">Year</Label>
                     <Select 
                       value={selectedYearId || "all-years"} 
-                      onValueChange={setSelectedYearId}
+                      onValueChange={val => setSelectedYearId(val)}
                       disabled={loadingStructure || years.length === 0}
                     >
                       <SelectTrigger id="year-select" className="w-full">
@@ -299,7 +332,7 @@ export function QuestionInterface() {
                     <Label htmlFor="semester-select">Semester</Label>
                     <Select 
                       value={selectedSemesterId || "all-semesters"} 
-                      onValueChange={setSelectedSemesterId}
+                      onValueChange={val => setSelectedSemesterId(val)}
                       disabled={loadingStructure || semesters.length === 0}
                     >
                       <SelectTrigger id="semester-select" className="w-full">
@@ -322,7 +355,7 @@ export function QuestionInterface() {
                     <Label htmlFor="unit-select">Unit</Label>
                     <Select 
                       value={selectedUnitId || "all-units"} 
-                      onValueChange={setSelectedUnitId}
+                      onValueChange={val => setSelectedUnitId(val)}
                       disabled={loadingStructure || units.length === 0}
                     >
                       <SelectTrigger id="unit-select" className="w-full">
@@ -418,6 +451,12 @@ export function QuestionInterface() {
                   <h3 className="text-lg font-medium mb-2">Answer</h3>
                   <div className="text-gray-700 whitespace-pre-line p-4 bg-gray-50 rounded-md">{answer}</div>
                 </div>
+                
+                {contextMessage && (
+                  <div className="text-sm text-gray-500 italic">
+                    {contextMessage}
+                  </div>
+                )}
 
                 {sources.length > 0 && (
                   <div>

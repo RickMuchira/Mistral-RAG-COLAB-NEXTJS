@@ -1,13 +1,17 @@
+//components/pdf-uploader.tsx
 "use client"
 
-import { useState, useEffect } from "react"
-import { useSearchParams } from "next/navigation"
+import { useState, useEffect, useCallback } from "react"
+import { useSearchParams, useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
-import { FileUp, Check, X, Loader2, AlertCircle, ChevronDown } from "lucide-react"
-import { uploadPdfs } from "@/app/api/client"
+import { FileUp, Check, X, Loader2, AlertCircle, RefreshCw, File } from "lucide-react"
+import { pingBackend, uploadPdfs } from "@/app/api/client"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Label } from "@/components/ui/label"
+import { Progress } from "@/components/ui/progress"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 
 // Define these types locally to avoid import errors
 interface Course {
@@ -38,15 +42,24 @@ interface Unit {
   description?: string;
 }
 
+interface FileWithStatus {
+  file: File;
+  status: "idle" | "uploading" | "success" | "error";
+  errorMessage?: string;
+}
+
 export function PdfUploader() {
   const searchParams = useSearchParams()
+  const router = useRouter()
   const preselectedUnitId = searchParams.get('unitId')
   
-  const [files, setFiles] = useState<File[]>([])
+  const [fileStates, setFileStates] = useState<FileWithStatus[]>([])
   const [uploading, setUploading] = useState(false)
-  const [uploadStatus, setUploadStatus] = useState<{ [key: string]: "success" | "error" | "uploading" }>({})
+  const [uploadProgress, setUploadProgress] = useState(0)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [backendAvailable, setBackendAvailable] = useState<boolean | null>(null)
+  const [isCheckingBackend, setIsCheckingBackend] = useState(false)
   
   // Course structure state
   const [courses, setCourses] = useState<Course[]>([])
@@ -60,6 +73,11 @@ export function PdfUploader() {
   const [selectedUnitId, setSelectedUnitId] = useState<string | null>(preselectedUnitId)
   
   const [loadingStructure, setLoadingStructure] = useState(false)
+  
+  // Check backend availability on component mount
+  useEffect(() => {
+    checkBackendConnection()
+  }, [])
   
   // Fetch courses on component mount
   useEffect(() => {
@@ -102,6 +120,20 @@ export function PdfUploader() {
       fetchUnitHierarchy(preselectedUnitId)
     }
   }, [preselectedUnitId])
+  
+  // Check backend connectivity
+  const checkBackendConnection = useCallback(async () => {
+    setIsCheckingBackend(true)
+    try {
+      const connected = await pingBackend()
+      setBackendAvailable(connected)
+    } catch (error) {
+      setBackendAvailable(false)
+      console.error('Backend connection check failed:', error)
+    } finally {
+      setIsCheckingBackend(false)
+    }
+  }, [])
   
   // API functions for course structure
   async function fetchCourses() {
@@ -220,7 +252,19 @@ export function PdfUploader() {
       const newFiles = Array.from(e.target.files).filter(
         (file) => file.type === "application/pdf" || file.name.toLowerCase().endsWith('.pdf')
       )
-      setFiles((prevFiles) => [...prevFiles, ...newFiles])
+      
+      if (newFiles.length === 0) {
+        setErrorMessage("Only PDF files are accepted")
+        return
+      }
+      
+      // Add new files with initial status
+      const newFileStates = newFiles.map(file => ({
+        file,
+        status: "idle" as const
+      }))
+      
+      setFileStates(prev => [...prev, ...newFileStates])
       setErrorMessage(null)
     }
   }
@@ -242,106 +286,172 @@ export function PdfUploader() {
       )
       
       if (newFiles.length === 0) {
-        setErrorMessage("Only PDF files are accepted.")
+        setErrorMessage("Only PDF files are accepted")
         return
       }
       
-      setFiles((prevFiles) => [...prevFiles, ...newFiles])
+      // Add new files with initial status
+      const newFileStates = newFiles.map(file => ({
+        file,
+        status: "idle" as const
+      }))
+      
+      setFileStates(prev => [...prev, ...newFileStates])
       setErrorMessage(null)
     }
   }
 
+  // Handle the upload process
   const handleUpload = async () => {
-    if (files.length === 0) {
-      setErrorMessage("Please select at least one PDF file to upload.")
+    if (fileStates.length === 0) {
+      setErrorMessage("Please select at least one PDF file to upload")
       return
     }
     
     if (!selectedUnitId) {
-      setErrorMessage("Please select a unit to upload files to.")
+      setErrorMessage("Please select a unit to upload files to")
       return
     }
 
     setUploading(true)
     setErrorMessage(null)
     setSuccessMessage(null)
+    setUploadProgress(0)
 
-    // Create a new status object with all files set to 'uploading'
-    const newStatus: { [key: string]: "success" | "error" | "uploading" } = {}
-    files.forEach((file) => {
-      newStatus[file.name] = "uploading"
-    })
-    setUploadStatus(newStatus)
+    // Set all files to uploading state
+    setFileStates(prev => prev.map(fileState => ({
+      ...fileState,
+      status: "uploading"
+    })))
 
     try {
-      // Create FormData with files and unitId
-      const formData = new FormData()
-      files.forEach((file) => {
-        formData.append('files', file)
-      })
-      formData.append('unitId', selectedUnitId)
+      // Check backend connectivity before starting upload
+      const backendConnected = await pingBackend()
+      setBackendAvailable(backendConnected)
       
-      // Send to our modified upload endpoint
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        body: formData,
-      })
-      
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || 'Upload failed')
+      // Create a warning if backend is not available but continue
+      if (!backendConnected) {
+        console.warn("Backend is not available. Files will be uploaded locally but processing may be delayed")
       }
       
-      const result = await response.json()
+      // Simulate progress for better user experience
+      const progressInterval = setInterval(() => {
+        setUploadProgress(prev => {
+          // Don't go to 100% until we actually complete
+          const nextValue = prev + (100 - prev) * 0.1
+          return Math.min(nextValue, 95)
+        })
+      }, 500)
       
-      // Update file status based on results
-      const successStatus: { [key: string]: "success" | "error" | "uploading" } = {}
-      const fileResults = result.results || []
+      const files = fileStates.map(fs => fs.file)
+      const response = await uploadPdfs(files, selectedUnitId)
       
-      fileResults.forEach((fileResult: any) => {
-        successStatus[fileResult.name] = fileResult.success ? "success" : "error"
-      })
+      clearInterval(progressInterval)
+      setUploadProgress(100)
       
-      setUploadStatus(successStatus)
-      setSuccessMessage(result.message || "Files uploaded successfully")
+      // Process the response and update file statuses
+      if (response.results && Array.isArray(response.results)) {
+        setFileStates(prev => {
+          return prev.map(fileState => {
+            // Find corresponding result
+            const fileResult = response.results.find(r => r.name === fileState.file.name)
+            
+            if (fileResult) {
+              return {
+                ...fileState,
+                status: fileResult.success ? "success" : "error",
+                errorMessage: fileResult.error
+              }
+            }
+            
+            // If no result found, assume error
+            return {
+              ...fileState,
+              status: "error",
+              errorMessage: "No upload result returned for this file"
+            }
+          })
+        })
+      }
+      
+      // Display success or partial success message
+      if (response.message) {
+        setSuccessMessage(response.message)
+      }
+      
+      // Display backend error if present
+      if (response.backendError) {
+        setErrorMessage(`Files were saved locally, but there was an issue with backend processing: ${response.backendError}`)
+      }
     } catch (error) {
-      // Update all files to error
-      const errorStatus: { [key: string]: "success" | "error" | "uploading" } = {}
-      files.forEach((file) => {
-        errorStatus[file.name] = "error"
-      })
-      setUploadStatus(errorStatus)
+      console.error("Upload error:", error)
       
-      console.error("Error uploading files:", error)
+      // Update all files to error state
+      setFileStates(prev => prev.map(fileState => ({
+        ...fileState,
+        status: "error",
+        errorMessage: error instanceof Error ? error.message : "Unknown error"
+      })))
+      
       setErrorMessage(error instanceof Error ? error.message : "Failed to upload files")
     } finally {
       setUploading(false)
     }
   }
 
+  // Remove a file from the list
   const removeFile = (fileName: string) => {
-    setFiles(files.filter((file) => file.name !== fileName))
-    setUploadStatus((prev) => {
-      const newStatus = { ...prev }
-      delete newStatus[fileName]
-      return newStatus
-    })
+    setFileStates(prev => prev.filter(fileState => fileState.file.name !== fileName))
     
     // Clear error message if no files left
-    if (files.length <= 1) {
+    if (fileStates.length <= 1) {
       setErrorMessage(null)
     }
   }
 
+  // Clear all files and reset the uploader
   const clearAllFiles = () => {
-    setFiles([])
-    setUploadStatus({})
+    setFileStates([])
+    setUploadProgress(0)
     setErrorMessage(null)
     setSuccessMessage(null)
   }
 
+  // Get counts of files in different states
+  const successCount = fileStates.filter(fs => fs.status === "success").length
+  const errorCount = fileStates.filter(fs => fs.status === "error").length
+  const pendingCount = fileStates.filter(fs => fs.status === "idle" || fs.status === "uploading").length
+
   return (
     <div className="space-y-8">
+      {/* Backend status indicator */}
+      {backendAvailable !== null && (
+        <Alert variant={backendAvailable ? "default" : "destructive"}>
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>Backend Status</AlertTitle>
+          <AlertDescription className="flex items-center justify-between">
+            <span>
+              {backendAvailable 
+                ? "Vector database backend is connected and ready to process PDFs."
+                : "Backend is currently unavailable. Files can be uploaded but processing may be delayed."}
+            </span>
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={checkBackendConnection}
+              disabled={isCheckingBackend}
+            >
+              {isCheckingBackend ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-2" />
+              )}
+              Recheck
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      
       {/* Course structure selection */}
       <Card>
         <CardContent className="p-6">
@@ -439,7 +549,7 @@ export function PdfUploader() {
               {loadingStructure && (
                 <div className="flex items-center justify-center py-4">
                   <Loader2 className="h-6 w-6 animate-spin text-gray-400 mr-2" />
-                  <span>Loading...</span>
+                  <span>Loading course structure...</span>
                 </div>
               )}
               
@@ -499,10 +609,17 @@ export function PdfUploader() {
               </div>
             )}
 
-            {files.length > 0 && (
+            {fileStates.length > 0 && (
               <div className="w-full mt-6">
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-lg font-medium">Selected Files ({files.length})</h3>
+                  <div>
+                    <h3 className="text-lg font-medium">Selected Files ({fileStates.length})</h3>
+                    {successCount > 0 && (
+                      <p className="text-sm text-gray-500">
+                        {successCount} successful, {errorCount} failed, {pendingCount} pending
+                      </p>
+                    )}
+                  </div>
                   <Button 
                     variant="outline" 
                     size="sm" 
@@ -513,20 +630,54 @@ export function PdfUploader() {
                   </Button>
                 </div>
                 
+                {uploading && uploadProgress > 0 && (
+                  <div className="mb-4">
+                    <Progress value={uploadProgress} className="h-2" />
+                    <p className="text-sm text-gray-500 mt-1">
+                      {uploadProgress < 100 ? 'Uploading...' : 'Processing files...'}
+                    </p>
+                  </div>
+                )}
+                
                 <div className="space-y-2">
-                  {files.map((file, index) => (
+                  {fileStates.map((fileState, index) => (
                     <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-md">
-                      <span className="text-sm truncate max-w-[70%]">{file.name}</span>
+                      <div className="flex items-center truncate max-w-[70%]">
+                        <File className="h-4 w-4 mr-2 text-gray-400" />
+                        <span className="text-sm truncate">{fileState.file.name}</span>
+                      </div>
                       <div className="flex items-center">
-                        {uploadStatus[file.name] === "uploading" && (
+                        {fileState.status === "uploading" && (
                           <Loader2 className="h-5 w-5 animate-spin text-gray-400 mr-2" />
                         )}
-                        {uploadStatus[file.name] === "success" && <Check className="h-5 w-5 text-green-500 mr-2" />}
-                        {uploadStatus[file.name] === "error" && <X className="h-5 w-5 text-red-500 mr-2" />}
+                        {fileState.status === "success" && (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger>
+                                <Check className="h-5 w-5 text-green-500 mr-2" />
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <p>Successfully uploaded and processed</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
+                        {fileState.status === "error" && (
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger>
+                                <X className="h-5 w-5 text-red-500 mr-2" />
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <p>{fileState.errorMessage || "Upload failed"}</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
+                        )}
                         <Button 
                           variant="ghost" 
                           size="sm" 
-                          onClick={() => removeFile(file.name)} 
+                          onClick={() => removeFile(fileState.file.name)} 
                           disabled={uploading}
                           className="ml-2"
                         >
@@ -540,7 +691,7 @@ export function PdfUploader() {
                 <Button 
                   className="w-full mt-4" 
                   onClick={handleUpload} 
-                  disabled={uploading || files.length === 0 || !selectedUnitId}
+                  disabled={uploading || fileStates.length === 0 || !selectedUnitId}
                 >
                   {uploading ? (
                     <>

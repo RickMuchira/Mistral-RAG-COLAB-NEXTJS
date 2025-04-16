@@ -8,7 +8,16 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
-    const semesterId = parseInt(params.id);
+    // Make sure to await/handle params properly
+    const id = params?.id;
+    if (!id) {
+      return NextResponse.json(
+        { error: 'Missing semester ID' },
+        { status: 400 }
+      );
+    }
+
+    const semesterId = parseInt(id);
     if (isNaN(semesterId)) {
       return NextResponse.json(
         { error: 'Invalid semester ID' },
@@ -33,7 +42,16 @@ export async function POST(
   { params }: { params: { id: string } }
 ) {
   try {
-    const semesterId = parseInt(params.id);
+    // Make sure to await/handle params properly
+    const id = params?.id;
+    if (!id) {
+      return NextResponse.json(
+        { error: 'Missing semester ID' },
+        { status: 400 }
+      );
+    }
+
+    const semesterId = parseInt(id);
     if (isNaN(semesterId)) {
       return NextResponse.json(
         { error: 'Invalid semester ID' },
